@@ -1,1 +1,42 @@
-# Add any directories, files, or patterns you don't want to be tracked by version control
+####### Project specific ignore list #######
+debug/
+output/
+
+####### General ignore list #######
+.project
+.pydevproject
+.settings/
+dist/
+venv/
+.coverage
+cover/
+*~
+DEBUILD/
+doc/_build/
+*.out
+*.ini
+*.pyc
+.idea/
+*.log
+*.old
+*.orig
+*.bkp
+*.bkup
+*.backup
+*.log
+*_old.*
+./*test*
+./*.out
+tests/testdata/
+tests/testdata/ca/*.pem
+tests/testdata/ca/*.txt
+tests/testdata/ca/*.der
+node_modules
+contrib/python-pyjwt/
+contrib/python-pymysql/
+contrib/PyKCS/
+contrib/PyOpenSSL/
+contrib/python-ldap3/
+contrib/python-pymysql_sa/
+htmlcov/
+tests/testdata/ca/*.req
