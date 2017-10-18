@@ -12,7 +12,6 @@ Step 4(TBD): Load this data to a staging S3 bucket
 Step 5(TBD): Ingest data into Redshift
 """
 
-from __future__ import print_function
 
 import csv
 import requests
@@ -90,6 +89,7 @@ def main():
         'level': 'ad',
         'filtering': [],
         'breakdowns': ['age', 'gender'],
+        'time_increment':1,
         'time_range': {'since':'2017-09-15', 'until':'2017-10-15'},
         'action_breakdowns': ['action_type'],  # optional, as it is the default behavior
         'export_format': 'csv',  # not working
