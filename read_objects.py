@@ -19,6 +19,15 @@ STATUS_URL = "https://graph.facebook.com/v2.10/"
 pp = pprint.PrettyPrinter(indent=4)
 
 
+def transform_action_array(arr):
+    """ Transform an action or action_value array into a record structure. """
+
+    ret = {}
+    for row in arr:
+        ret[row['action_type']] = row['value']
+
+    return ret
+
 
 def get_insights():
     print('Starting get insights')
@@ -51,15 +60,60 @@ def get_insights():
     params['access_token'] = config['access_token']
     params['level'] = 'ad'
     params['breakdowns'] = ['age', 'gender']
-    params['fields'] = ['account_id', 'account_name', 'ad_id', 'ad_name', 'adset_id',
-                        'adset_name', 'campaign_id', 'campaign_name',
-                        'call_to_action_clicks', 'inline_link_clicks', 'unique_clicks', 'frequency',
+    params['time_increment'] = 1
+    params['fields'] = ['account_id',
+                        'account_name',
+                        'ad_id',
+                        'ad_name',
+                        'adset_id',
+                        'adset_name',
+                        'campaign_id',
+                        'campaign_name',
+                        'video_avg_time_watched_actions',
                         'impressions',
-                        'reach', 'relevance_score', 'social_clicks', 'unique_social_clicks',
-                        'social_impressions', 'social_reach', 'spend', 'action_values', 'actions',
-                        'cost_per_action_type', 'cost_per_total_action', 'total_action_value',
-                        'total_actions', 'total_unique_actions', 'unique_actions']
-    params['time_range'] = {'since': '2016-07-05', 'until': '2017-10-05'}
+                        'spend',
+                        'inline_post_engagement',
+                        'video_avg_percent_watched_actions',
+                        'outbound_clicks',
+                        'unique_outbound_clicks',
+                        'unique_clicks',
+                        'inline_link_clicks',
+                        'unique_inline_link_clicks',
+                        'video_p25_watched_actions',
+                        'video_p50_watched_actions',
+                        'video_p75_watched_actions',
+                        'video_p95_watched_actions',
+                        'video_p100_watched_actions',
+                        'video_10_sec_watched_actions',
+                        'video_30_sec_watched_actions',
+                        'frequency',
+                        'reach',
+                        'social_impressions',
+                        'social_reach',
+                        'actions',
+                        'action_values',
+                        'call_to_action_clicks',
+                        'total_actions',
+                        'total_unique_actions',
+                        'unique_actions']
+    params['time_range'] = {'since': '2017-09-05', 'until': '2017-10-05'}
+
+    action_objects = ['actions',
+                      'action_values',
+                      'unique_actions',
+                      'outbound_clicks',
+                      'unique_outbound_clicks',
+                      'cost_per_action_type',
+                      'video_avg_percent_watched_actions',
+                      'video_avg_time_watched_actions',
+                      'video_p25_watched_actions',
+                      'video_p50_watched_actions',
+                      'video_p75_watched_actions',
+                      'video_p95_watched_actions',
+                      'video_p100_watched_actions',
+                      'video_10_sec_watched_actions',
+                      'video_30_sec_watched_actions'
+                      ]
 
     report_values = {
         'access_token': config['access_token']
@@ -114,11 +168,20 @@ def get_insights():
 
                         # if you want to do row wise operations, do it here and write this to file instead.
                         # print(line)
+                        for idx in action_objects:
+                            if idx in line:
+                                line[idx + '_record'] = transform_action_array(line[idx])
+                                del line[idx]
+
                         row_count = row_count + 1
+                        # outfile.write("{}\n".format(line))
+                        json.dump(line, outfile)
+                        outfile.write('\n')
+
 
                     # write data to file as raw json
                     # json.dump(results['data'], outfile)
-                    json.dump(results, outfile)
+                    # json.dump(results, outfile, indent=2)
 
 
 

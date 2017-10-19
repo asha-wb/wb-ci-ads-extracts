@@ -36,8 +36,7 @@ from facebookads.adobjects.adaccount import AdAccount
 OUT_FILE = 'output/fb_extract_%s.csv' % (datetime.now().strftime('%Y%m%d_%H%M'))
 AD_ACCOUNT_ID = 'act_186520528512505'  # act_<account_id>
 #APP_ID = '170628176822745'
-APP_SECRET = ''
-EXTENDED_USER_TOKEN = ''
+EXTENDED_USER_TOKEN = 'EAACbL3feQdkBAEqElZCBvbBqZAEgHm0nehFEbkSq6v0sJgcPAI4vMdaKwCdnKsqKokvuh5xZAJFt0thIRArzdBPih7aCPfENNDwFghK8ipu1UJxUWHDOSa2oTcUm6zQW3UloIabuxlWMZBCTTF7tvw0wYPrKAVDefD2gI2ZAnKKKWrJOi2A08ZBmg4fB5zxToFWewZCwdMnAlFUZAZCW4dX3r'
         # contains app token embedded inside it
 
 
