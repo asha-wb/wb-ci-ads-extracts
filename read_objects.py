@@ -166,24 +166,19 @@ def get_insights():
 
                     for line in results['data']:
 
-                        # if you want to do row wise operations, do it here and write this to file instead.
-                        # print(line)
+                        # processes action objects to make it flatter
                         for idx in action_objects:
                             if idx in line:
                                 line[idx + '_record'] = transform_action_array(line[idx])
+                                # remove the original key
                                 del line[idx]
 
                         row_count = row_count + 1
-                        # outfile.write("{}\n".format(line))
+
+
+                        # write json to file followed by new line.
                         json.dump(line, outfile)
                         outfile.write('\n')
-
-
-                    # write data to file as raw json
-                    # json.dump(results['data'], outfile)
-                    # json.dump(results, outfile, indent=2)
-
-
 
                     if 'paging' in results and 'after' in results['paging']['cursors'] and results['paging']['cursors'][
                         'after'] != report_values['after']:
