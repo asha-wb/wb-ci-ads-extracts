@@ -177,6 +177,9 @@ def get_insights():
 
 
                         # write json to file followed by new line.
+
+                        #if we want to do flattening processing in python, it goes <HERE>
+
                         json.dump(line, outfile)
                         outfile.write('\n')
 
