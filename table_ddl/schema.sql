@@ -1,0 +1,18 @@
+
+CREATE SCHEMA core;
+CREATE SCHEMA etldata;
+CREATE SCHEMA ods;
+CREATE SCHEMA sandbox;
+CREATE SCHEMA stage;
+CREATE SCHEMA workarea;
+
+CREATE GROUP etldev;
+
+GRANT ALL ON SCHEMA core TO GROUP etldev;
+GRANT ALL ON SCHEMA etldata TO GROUP etldev;
+GRANT ALL ON SCHEMA ods TO GROUP etldev;
+GRANT ALL ON SCHEMA sandbox TO GROUP etldev;
+GRANT ALL ON SCHEMA stage TO GROUP etldev;
+GRANT ALL ON SCHEMA workarea TO GROUP etldev;
+
+ALTER GROUP etldev ADD USER svc_ads;

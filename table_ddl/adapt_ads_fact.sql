@@ -1,4 +1,4 @@
-CREATE TABLE adapt.ads_fact (
+CREATE TABLE core.ads_fact (
   report_start_dt            TIMESTAMP,
   report_end_dt              TIMESTAMP,
   ad_id                      VARCHAR(50),
@@ -20,7 +20,7 @@ CREATE TABLE adapt.ads_fact (
   post_share_count           BIGINT,
   comment_count              BIGINT,
   post_reaction_count        BIGINT,
-  video_avg_percent_watched  DECIMAL(6,2),
+  video_avg_percent_watched  DECIMAL(6, 2),
   outbound_clicks            BIGINT,
   unique_outbound_clicks     BIGINT,
   unique_clicks              BIGINT,
@@ -33,15 +33,15 @@ CREATE TABLE adapt.ads_fact (
   video_p100_watched_count   BIGINT,
   video_10_sec_watched_count BIGINT,
   video_30_sec_watched_count BIGINT,
-  frequency                  DECIMAL(18,7),
+  frequency                  DECIMAL(18, 7),
   reach                      BIGINT,
   social_impressions         BIGINT,
   social_reach               BIGINT,
   call_to_action_clicks      BIGINT,
   source_system              VARCHAR(45),
+  cidw_etlload_id            INTEGER,
   cidw_load_dttm             TIMESTAMP DEFAULT getdate() NOT NULL ENCODE ZSTD
 )
-DISTKEY(ad_id)
-,SORTKEY(report_start_dt)
-, DISTSTYLE KEY
-
+  DISTSTYLE EVEN
+  SORTKEY (report_start_dt);
+-- dist/sort key is temporary
