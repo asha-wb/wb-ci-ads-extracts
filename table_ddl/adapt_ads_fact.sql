@@ -38,6 +38,7 @@ CREATE TABLE core.ads_fact (
   social_impressions         BIGINT,
   social_reach               BIGINT,
   call_to_action_clicks      BIGINT,
+  data_breakdown             VARCHAR(100),
   source_system              VARCHAR(45),
   cidw_etlload_id            INTEGER,
   cidw_load_dttm             TIMESTAMP DEFAULT getdate() NOT NULL ENCODE ZSTD
