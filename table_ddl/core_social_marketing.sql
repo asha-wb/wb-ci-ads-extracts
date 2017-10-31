@@ -1,4 +1,4 @@
-CREATE TABLE core.ads_fact (
+CREATE TABLE core.social_marketing (
   report_start_dt            TIMESTAMP,
   report_end_dt              TIMESTAMP,
   ad_id                      VARCHAR(50),
@@ -9,8 +9,8 @@ CREATE TABLE core.ads_fact (
   account_name               VARCHAR(50),
   campaign_id                VARCHAR(50),
   campaign_name              VARCHAR(50),
-  age                        VARCHAR(50),
-  gender                     VARCHAR(50),
+  target_age_range           VARCHAR(50),
+  target_gender                     VARCHAR(50),
   video_avg_time_watched     BIGINT,
   impressions                BIGINT,
   spend                      DECIMAL(18, 2),
@@ -40,8 +40,11 @@ CREATE TABLE core.ads_fact (
   call_to_action_clicks      BIGINT,
   data_breakdown             VARCHAR(100),
   source_system              VARCHAR(45),
-  cidw_etlload_id            INTEGER,
-  cidw_load_dttm             TIMESTAMP DEFAULT getdate() NOT NULL ENCODE ZSTD
+  cidw_load_dttm TIMESTAMP NOT NULL DEFAULT getdate(),
+  cidw_extractfilename VARCHAR(255) NOT NULL,
+  cidw_etlload_id INTEGER NOT NULL,
+  cidw_rowhash VARCHAR(50) NOT NULL,
+  cidw_is_testdata BOOLEAN NOT NULL
 )
   DISTSTYLE EVEN
   SORTKEY (report_start_dt);
