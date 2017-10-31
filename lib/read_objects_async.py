@@ -1,22 +1,20 @@
-
-from facebookads import FacebookSession
-from facebookads import FacebookAdsApi
-from facebookads.adobjects.adaccountuser import AdAccountUser
-from facebookads.adobjects.adaccount import AdAccount
-from facebookads.adobjects.adreportrun import AdReportRun
-
-from facebookads.adobjects.campaign import Campaign
-
+# -*- coding: utf-8 -*-
+#lib/read_objects_async.py
 
 import json
 import os
-import pprint
-import requests
 import time
+import logging
+import requests
+from facebookads.adobjects.adaccountuser import AdAccountUser
+from facebookads.adobjects.adaccount import AdAccount
+from facebookads.adobjects.adreportrun import AdReportRun
+from facebookads.adobjects.campaign import Campaign
+
+
+logger = logging.getLogger(__name__)
 
 STATUS_URL = "https://graph.facebook.com/v2.10/"
-
-pp = pprint.PrettyPrinter(indent=4)
 
 
 def transform_action_array(arr):
@@ -29,35 +27,22 @@ def transform_action_array(arr):
     return ret
 
 
-def get_insights():
+def get_insights(
+        start_date,
+        end_date,
+        account_id,
+        access_token):
+    """
+    """
     print('Starting get insights')
 
-    this_dir = os.path.dirname(__file__)
-    config_filename = os.path.join(this_dir, 'config.json')
-
-    config_file = open(config_filename)
-    config = json.load(config_file)
-    config_file.close()
-
-    ### Setup session and api objects
-    session = FacebookSession(
-        config['app_id'],
-        config['app_secret'],
-        config['access_token'],
-    )
-    api = FacebookAdsApi(session)
-
-
-    FacebookAdsApi.set_default_api(api)
-
-
-    ad_account_id = 'act_186520528512505'
+    ad_account_id = 'act_' + str(account_id)
 
     acc = AdAccount(ad_account_id)
     print(acc.get_id())
 
     params = dict()
-    params['access_token'] = config['access_token']
+    params['access_token'] = access_token
     params['level'] = 'ad'
     params['breakdowns'] = ['age', 'gender']
     params['time_increment'] = 1
@@ -96,7 +81,7 @@ def get_insights():
                         'total_actions',
                         'total_unique_actions',
                         'unique_actions']
-    params['time_range'] = {'since': '2017-09-05', 'until': '2017-10-05'}
+    params['time_range'] = {'since': start_date.strftime('%Y-%m-%d'), 'until': end_date.strftime('%Y-%m-%d')}
 
     action_objects = ['actions',
                       'action_values',
@@ -113,15 +98,14 @@ def get_insights():
                       'video_p100_watched_actions',
                       'video_10_sec_watched_actions',
                       'video_30_sec_watched_actions'
-                      ]
+                     ]
 
     report_values = {
-        'access_token': config['access_token']
+        'access_token': access_token
         , 'after': '',
         'limit': 500
-    }
+        }
 
-    acc = AdAccount(ad_account_id)
     i_async_job = acc.get_insights(params=params, async=True)
     print("Async job ID: %s" % i_async_job['report_run_id'])
 
@@ -134,15 +118,16 @@ def get_insights():
     row_count = 0
     page_number = 0
 
-    # print(config['access_token'])
 
     while True:
         if retry_count > max_retries:
-            print('max retries hit, aborting')
+            print('max retries hit, aborting...')
+            break
 
+        retry_count += 1
         time.sleep(10)
 
-        status = requests.get(STATUS_URL + i_async_job['report_run_id'], params= {'access_token': config['access_token']}).json()
+        status = requests.get(STATUS_URL + i_async_job['report_run_id'], params= {'access_token': access_token}).json()
         print(status)
         print('async_percent_completion:' + str(status[AdReportRun.Field.async_percent_completion]))
         print ('job status: ' + status[AdReportRun.Field.async_status])
@@ -152,7 +137,7 @@ def get_insights():
 
             print ('report done, begin extract')
 
-            outfile = open('outfile.json', 'w+')
+            outfile = open(output_filename, 'wb')
 
             while True:
                 req = requests.get(STATUS_URL + i_async_job['report_run_id'] + "/insights",
@@ -164,6 +149,7 @@ def get_insights():
 
                     results = req.json()
 
+                    import ipdb; ipdb.set_trace() # BREAKPOINT
                     for line in results['data']:
 
                         # processes action objects to make it flatter
@@ -194,14 +180,4 @@ def get_insights():
                         return
 
                     page_number += 1
-
-
-if __name__ == '__main__':
-    print('starting')
-
-    get_insights()
-
-    print('done')
-
-
 

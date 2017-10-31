@@ -1,5 +1,5 @@
 #!/usr/bin/env python2
-#sand_fb_extract.py
+#runner_fb_data_pull.py
 # -*- coding: utf-8 -*-
 """
 POC for Facebook analytics data pull:-
@@ -12,14 +12,29 @@ Step 4(TBD): Load this data to a staging S3 bucket
 Step 5(TBD): Ingest data into Redshift
 """
 
-
+import os
+import sys
 import csv
-import requests
+import logging
+import logging.config  # required
+import argparse
+import configparser
 from datetime import datetime
 from collections import defaultdict
-from facebookads.api import FacebookAdsApi
-from facebookads.adobjects.adaccount import AdAccount
-#from facebookads.adobjects.adsinsights import AdsInsights
+
+import pandas as pd
+import requests
+import boto3
+from facebookads import FacebookSession
+from facebookads import FacebookAdsApi
+from common.log import setup_logging
+from common.redshift_connector import DBConnection
+from common.kms_utils import decrypt_content
+from common.s3_uploader import upload_file_s3
+from lib.read_objects_async import get_insights
+from lib.token_utils import get_extended_access_token
+
+logger = logging.getLogger('fb.markering_api.runner')
 
 #import hashlib
 #import hmac
@@ -32,98 +47,56 @@ from facebookads.adobjects.adaccount import AdAccount
 #    )
 #    return h.hexdigest()
 
-
 OUT_FILE = 'output/fb_extract_%s.csv' % (datetime.now().strftime('%Y%m%d_%H%M'))
-AD_ACCOUNT_ID = 'act_186520528512505'  # act_<account_id>
-#APP_ID = '170628176822745'
-EXTENDED_USER_TOKEN = 'EAACbL3feQdkBAEqElZCBvbBqZAEgHm0nehFEbkSq6v0sJgcPAI4vMdaKwCdnKsqKokvuh5xZAJFt0thIRArzdBPih7aCPfENNDwFghK8ipu1UJxUWHDOSa2oTcUm6zQW3UloIabuxlWMZBCTTF7tvw0wYPrKAVDefD2gI2ZAnKKKWrJOi2A08ZBmg4fB5zxToFWewZCwdMnAlFUZAZCW4dX3r'
-        # contains app token embedded inside it
 
 
 def main():
     """
     main method
     """
-    #appsecret_proof = gen_app_secret_proof(app_secret, access_token)
-    # FacebookAdsApi.init(my_app_id, my_app_secret, my_access_token)
+    # general setup: logging and read config/inputs
+    parser = argparse.ArgumentParser(description='Facebook Marketing API extracts daily run')
+    config = configparser.ConfigParser()
 
+    parser.add_argument("--config_file")
+    parser.add_argument("--encrypted_data_key_file")
+    parser.add_argument("--encrypted_credentials_file")
+    args = parser.parse_args()
 
-    # Step-0: test token expiry here
-    FacebookAdsApi.init(app_secret=APP_SECRET,
-                        access_token=EXTENDED_USER_TOKEN)
-                        # looks like app_id is not reqd.
-                        # since we are providing extended_user_token
-                        # which already has app token embedded in it
+    config.read(args.config_file)
 
-    # Step-1: Pull data from API
-    fields = [
-          'account_id'
-        , 'account_name'
-        , 'campaign_id'
-        , 'campaign_name'
-        , 'adset_id'
-        , 'adset_name'
-        , 'ad_id'
-        , 'ad_name'
-        , 'date_start'
-        , 'date_stop'
-        , 'impressions'
-        , 'frequency'
-        , 'reach'
-        , 'spend'
-        , 'clicks'
-        , 'outbound_clicks'
-        , 'unique_outbound_clicks'
-        , 'inline_link_clicks'
-        , 'unique_inline_link_clicks'
-        , 'social_impressions'
-        , 'social_reach'
-        , 'video_avg_time_watched_actions'
-        , 'video_avg_percent_watched_actions'
-        , 'video_10_sec_watched_actions'
-        , 'video_p100_watched_actions'
-        , 'actions'
-        ]
-    params = {
-        'level': 'ad',
-        'filtering': [],
-        'breakdowns': ['age', 'gender'],
-        'time_increment':1,
-        'time_range': {'since':'2017-09-15', 'until':'2017-10-15'},
-        'action_breakdowns': ['action_type'],  # optional, as it is the default behavior
-        'export_format': 'csv',  # not working
-        'export_name': 'fb_export.csv'  # not working
-        }
+    # Step-0: initiate aws and facebook app sessions
+    aws_session = boto3.Session(profile_name=config.get('AWS', 'profile'))
+    aws_access_key = aws_session.get_credentials().access_key
+    aws_secret_key = aws_session.get_credentials().secret_key
+    redshift = config['Redshift']
 
-    account = AdAccount(fbid=AD_ACCOUNT_ID)
-    print("Account ID for which report is being pulled = %s" %(account.get_id()))
-    fb_cursor = account.get_insights(fields=fields, params=params)  # returns facebook.ads.Cursor object
-    print("Request successfully sent to Graph API...")
+    app_id = config.get('Facebook', 'app_id')
+    app_secret = config.get('Facebook', 'app_secret')
+    access_token = config.get('Facebook', 'access_token')
 
-    # Step-2: flatten the graph api output
-    buff = []
-    for ai_obj in fb_cursor:
-        data = ai_obj.export_all_data()
-        flat_data = defaultdict()
-        for k, v in data.iteritems():
-            if not isinstance(v, list):
-                flat_data[k] = v
-                continue
-            elif k == 'actions':
-                for each_action in v:
-                    a_key = each_action.get('action_type')  # currently the code is designed to only capture action_type
-                    a_val = each_action.get('value')
-                    flat_data[a_key] = a_val
-            elif k.startswith('video'):
-                a_key = k
-                if v[0]['action_type'] == 'video_view':  # currently code is only designed to capture the first dict
-                    a_val = v[0]['value']
-                    flat_data[a_key] = a_val
-            else:
-                flat_data[k] = str(v)
+    new_access_token = get_extended_access_token(app_id, app_secret, access_token)
 
-        buff.append(flat_data)
-    print("data is flattened...")
+    fb_session = FacebookSession(
+            app_id,
+            app_secret,
+            new_access_token
+    )
+    api = FacebookAdsApi(fb_session)
+
+    FacebookAdsApi.set_default_api(api)
+
+    start_date = datetime.strptime(config.get('Facebook', 'start_date'), '%Y-%m-%d')
+    end_date = datetime.strptime(config.get('Facebook', 'end_date'), '%Y-%m-%d')
+
+    # Step-1: Call the Insights API async
+    output_df = get_insights(
+            start_date,
+            end_date,
+            account_id,
+            new_access_token
+            )
+
 
     # Step-3: write the output to a file
     with open(OUT_FILE, 'wb') as fout:

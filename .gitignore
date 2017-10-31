@@ -3,6 +3,7 @@ debug/
 output/
 
 ####### General ignore list #######
+secrets.json
 .project
 .pydevproject
 .settings/

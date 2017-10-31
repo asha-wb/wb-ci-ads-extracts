@@ -1,0 +1,24 @@
+[Redshift]
+dbname: adapt
+host: 10.176.31.148
+port: 5439
+user: svc_ads
+password:  # encrypted
+output_stage: stage.ads_fact
+output_core: core.ads_fact
+
+[Facebook]
+app_id: 170628176822745
+app_secret:  # encrypted
+access_token:  # encrypted
+account_id: 186520528512505  # comma separated
+start_date: 2017-01-01  # YYYY-MM-DD
+end_date: 2017-10-27  # YYYY-MM-DD
+breakdowns: age, gender
+level: ad
+extract_name_prefix: test  # e.g. - test --> test_fb_extract_<timestamp>.csv
+
+[AWS]
+stage_bucket: cisandbox/home/aray/private/facebook/
+profile: prod
+notifyees: anshuman.ray@wbconsultant.com
