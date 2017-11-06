@@ -36,18 +36,21 @@ from lib.token_utils import get_extended_access_token
 
 logger = logging.getLogger('fb.markering_api.runner')
 
-#import hashlib
-#import hmac
-#
-#def gen_app_secret_proof(app_secret, access_token):
-#    h = hmac.new(
-#        app_secret.encode('utf-8'),
-#        msg=access_token.encode('utf-8'),
-#        digestmod=hashlib.sha256
-#    )
-#    return h.hexdigest()
 
 OUT_FILE = 'output/fb_extract_%s.csv' % (datetime.now().strftime('%Y%m%d_%H%M'))
+COLS_ORDER = ['date_start', 'date_stop', 'ad_id', 'ad_name', 'adset_id',
+              'adset_name', 'account_id', 'account_name', 'campaign_id',
+              'campaign_name', 'age', 'gender', 'video_avg_time_watched_actions',
+              'impressions', 'spend', 'page_engagement', 'like', 'post_engagement',
+              'post', 'comment', 'post_reaction', 'video_avg_percent_watched_actions',
+              'outbound_clicks', 'unique_outbound_clicks', 'clicks', 'link_click',
+              'unique_inline_link_clicks', 'video_p25_watched_actions',
+              'video_p50_watched_actions', 'video_p75_watched_actions',
+              'video_p95_watched_actions', 'video_p100_watched_actions',
+              'video_10_sec_watched_actions', 'video_30_sec_watched_actions',
+              'frequency', 'reach', 'social_impressions', 'social_reach',
+              'call_to_action_clicks'
+             ]
 
 
 def main():
@@ -63,6 +66,8 @@ def main():
     parser.add_argument("--encrypted_credentials_file")
     args = parser.parse_args()
 
+    if not args.config_file:
+        raise RuntimeError('No config file provided...')
     config.read(args.config_file)
 
     # Step-0: initiate aws and facebook app sessions
@@ -74,6 +79,7 @@ def main():
     app_id = config.get('Facebook', 'app_id')
     app_secret = config.get('Facebook', 'app_secret')
     access_token = config.get('Facebook', 'access_token')
+    account_id = config.get('Facebook', 'account_id')
 
     new_access_token = get_extended_access_token(app_id, app_secret, access_token)
 
@@ -94,20 +100,27 @@ def main():
             start_date,
             end_date,
             account_id,
-            new_access_token
+            new_access_token,
+            COLS_ORDER
             )
 
 
+    print "final output dataframe is created..."
+    print output_df.head()
+
+    output_df.to_csv(OUT_FILE, index=False)
+
+    import ipdb; ipdb.set_trace() # BREAKPOINT
     # Step-3: write the output to a file
-    with open(OUT_FILE, 'wb') as fout:
-        fieldnames = []
-        for x in buff:
-            fieldnames.extend(x.keys())
-        #fieldnames.extend([x.keys() for x in buff])
-        fieldnames = list(set(fieldnames))
-        writer = csv.DictWriter(fout, fieldnames=fieldnames, dialect='excel')
-        writer.writeheader()
-        writer.writerows(buff)
+    #with open(OUT_FILE, 'wb') as fout:
+    #    fieldnames = []
+    #    for x in buff:
+    #        fieldnames.extend(x.keys())
+    #    #fieldnames.extend([x.keys() for x in buff])
+    #    fieldnames = list(set(fieldnames))
+    #    writer = csv.DictWriter(fout, fieldnames=fieldnames, dialect='excel')
+    #    writer.writeheader()
+    #    writer.writerows(buff)
 
     print("output file is written - %s" % (OUT_FILE))
 
