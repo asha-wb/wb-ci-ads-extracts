@@ -94,10 +94,13 @@ class CrawlerTable(object):
         """ Build a dataframe and create external Hive table """
         self.logger.debug('Creating dataframe from %s format', file_type)
         try:
+            header_skip = 0
             if file_type == 'csv':
                 df = spark_session.read.csv(self.s3_location, header=self.use_csv_header, inferSchema=True, mode='DROPMALFORMED')
                 file_format = 'STORED AS TEXTFILE'
-                row_format = "ROW FORMAT DELIMITED FIELDS TERMINATED BY ','"
+                row_format = "ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde' WITH SERDEPROPERTIES('quoteChar'='\"')"
+                if self.use_csv_header:
+                    header_skip = 1
             elif file_type == 'json':
                 df = spark_session.read.json(self.s3_location, mode='DROPMALFORMED')
                 file_format = 'STORED AS TEXTFILE'
@@ -129,7 +132,8 @@ class CrawlerTable(object):
                                           'crawler.file.num_files'={num_files},
                                           'crawler.file.partitioned'='{partitioned}',
                                           'crawler.file.file_type'='{file_type}',
-                                          'crawler.job.id'='{job_id}')
+                                          'crawler.job.id'='{job_id}',
+                                          'skip.header.line.count'='{header_skip}')
                         """.format(
                             database=database,
                             name=self.name,
@@ -142,7 +146,8 @@ class CrawlerTable(object):
                             num_files=max(1, len(self.files)),
                             partitioned=str(self.partitioned).lower(),
                             file_type=file_type,
-                            job_id=job_id
+                            job_id=job_id,
+                            header_skip=header_skip
                         )
 
         self.logger.debug(drop_query)
