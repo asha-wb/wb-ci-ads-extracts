@@ -6,9 +6,10 @@ A crawler to read S3 files, generate table schema, and import into Hive metastor
 Usage: spark-submit \
         --conf spark.hadoop.hadoop.security.credential.provider.path jceks://file/path/to/jceks \
         hive_crawler.py \
-            --database [default] \
-            --json_serde [hdfs://path/to/jars/hive-hcatalog-core.jar] \
-            --job_id [jr_asdsfdsf] \
+            [ --database default ] \
+            [ --json_serde hdfs://path/to/jars/hive-hcatalog-core.jar ] \
+            [ --job_id jr_asdsfdsf ] \
+            [ --allow_single_files ] \
             s3://my-bucket/directory/to/scrape
 """
 
@@ -28,14 +29,15 @@ except ImportError:
 
 class CrawlerTable(object):
     """ A table created by the crawler """
-    def __init__(self, key, bucket='', name=None, partitioned=False, modified_time=None, files=[]):
+    def __init__(self, key, bucket='', name=None, partitioned=False, modified_time=None, files=[], is_base_file=False):
         self.key = key
         self.bucket = bucket
         self.s3_location = 's3n://{}/{}'.format(bucket, key)
-        self.s3_directory = self.s3_location.replace('s3n://', 's3a://')
+        self.s3_directory = self.s3_location
         self.modified_time = modified_time
         self.partitioned = partitioned
         self.files = files
+        self.is_base_file = is_base_file
 
         if not name:
             name = self.s3_location.rsplit('/', 1)[1].replace('.', '_').replace(' ', '-')
@@ -93,6 +95,7 @@ class CrawlerTable(object):
     def build_dataframe(self, file_type, database, spark_session, hive_context, job_id):
         """ Build a dataframe and create external Hive table """
         self.logger.debug('Creating dataframe from %s format', file_type)
+
         try:
             header_skip = 0
             if file_type == 'csv':
@@ -120,41 +123,65 @@ class CrawlerTable(object):
             json_col = col.jsonValue()
             col_list.append('{} {}'.format(json_col['name'], json_col['type'].upper()))
 
-        drop_query = "DROP TABLE IF EXISTS {database}.{name}".format(database=database, name=self.name)
-        create_query = """CREATE EXTERNAL TABLE IF NOT EXISTS {database}.{name}
-                            ({col_list}) 
-                            {row_format} 
-                            {file_format} 
-                            LOCATION '{s3_location}'
-                            TBLPROPERTIES('crawler.file.location'='{s3_location}',
-                                          'crawler.file.modified_time'='{modified_time}',
-                                          'crawler.file.num_rows'={num_rows},
-                                          'crawler.file.num_files'={num_files},
-                                          'crawler.file.partitioned'='{partitioned}',
-                                          'crawler.file.file_type'='{file_type}',
-                                          'crawler.job.id'='{job_id}',
-                                          'skip.header.line.count'='{header_skip}')
-                        """.format(
-                            database=database,
-                            name=self.name,
-                            col_list=','.join(col_list),
-                            row_format=row_format,
-                            file_format=file_format,
-                            s3_location=self.s3_directory,
-                            modified_time=self.modified_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                            num_rows=df.count(),
-                            num_files=max(1, len(self.files)),
-                            partitioned=str(self.partitioned).lower(),
-                            file_type=file_type,
-                            job_id=job_id,
-                            header_skip=header_skip
-                        )
+        drop_query = "DROP TABLE IF EXISTS {database}.{name}".format(
+            database=database,
+            name=self.name)
 
         self.logger.debug(drop_query)
         hive_context.sql(drop_query)
 
+        table_properties = """ALTER TABLE {database}.{name} SET TBLPROPERTIES(
+                                            'crawler.file.location'='{s3_location}',
+                                            'crawler.file.modified_time'='{modified_time}',
+                                            'crawler.file.num_rows'={num_rows},
+                                            'crawler.file.num_files'={num_files},
+                                            'crawler.file.partitioned'='{partitioned}',
+                                            'crawler.file.file_type'='{file_type}',
+                                            'crawler.job.id'='{job_id}',
+                                            'skip.header.line.count'='{header_skip}')"""
+
+        if self.is_base_file:
+            self.logger.warn('Creating table from single file in base directory')
+            create_template = """CREATE TABLE IF NOT EXISTS {database}.{name}
+                                    ({col_list})
+                                    """
+        else:
+            create_template = """CREATE EXTERNAL TABLE IF NOT EXISTS {database}.{name}
+                                ({col_list}) 
+                                {row_format} 
+                                {file_format} 
+                                LOCATION '{s3_location}'
+                            """
+
+        create_query = create_template.format(
+            database=database,
+            name=self.name,
+            col_list=','.join(col_list),
+            row_format=row_format,
+            file_format=file_format,
+            s3_location=self.s3_directory)
+
+        tbl_properties_update = table_properties.format(
+            database=database,
+            name=self.name,
+            s3_location=self.s3_directory,
+            modified_time=self.modified_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            num_rows=df.count(),
+            num_files=max(1, len(self.files)),
+            partitioned=str(self.partitioned).lower(),
+            file_type=file_type,
+            job_id=job_id,
+            header_skip=header_skip)
+
         self.logger.debug(create_query)
         hive_context.sql(create_query)
+
+        if self.is_base_file:
+            df.write.mode('overwrite').saveAsTable('{}.{}'.format(database, self.name))
+
+        self.logger.debug(tbl_properties_update)
+        hive_context.sql(tbl_properties_update)
+
         return True
 
     def create_hive_table(self, s3_client, database='default', spark_session=None, hive_context=None, job_id=''):
@@ -204,6 +231,7 @@ class Crawler(object):
         self.path = path
         self.s3 = s3_client
         self.root = Node('{}/{}'.format(self.bucket, self.path))
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def crawl(self):
         """ Crawls S3 location and generates a tree from the file structure """
@@ -219,10 +247,10 @@ class Crawler(object):
                                 found = True
 
                         if not found:
-                            node = Node(d, parent=current_root, scraped=False, partitioned=False, file_obj=file)
+                            node = Node(d, parent=current_root, scraped=False, partitioned=False, file_obj=file, base_file=False)
                             current_root = node
 
-    def get_tables(self):
+    def get_tables(self, allow_single_files=False):
         """ Using the tree generated by crawl(), build CrawlerTable objects """
         tables = []
         for node in PreOrderIter(self.root):
@@ -232,15 +260,22 @@ class Crawler(object):
 
                 if not node.path[1].scraped:
                     if len(node.siblings) == 0 or node.parent == self.root:
+                        self.logger.debug('Found single file %s', node.name)
                         parent_path = ''
                         if node.parent != self.root:
                             parent_path = node.parent.name + '/'
+                        elif node.parent == self.root and not allow_single_files:
+                            self.logger.info('Skipping base file %s', node.name)
+                            continue
+                        else:
+                            node.base_file = True
 
                         table = CrawlerTable(
                             self.path + '/' + parent_path + node.name,
                             bucket=self.bucket,
                             partitioned=node.partitioned,
-                            modified_time=node.file_obj['LastModified']
+                            modified_time=node.file_obj['LastModified'],
+                            is_base_file=node.base_file
                         )
                     else:
                         files = ['s3n://' + '/'.join([p.name for p in node.path])]
@@ -272,8 +307,11 @@ def main():
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
 
-    crawler_logger = logging.getLogger(CrawlerTable.__name__)
+    crawler_logger = logging.getLogger(Crawler.__name__)
     crawler_logger.setLevel(logging.DEBUG)
+
+    table_logger = logging.getLogger(CrawlerTable.__name__)
+    table_logger.setLevel(logging.DEBUG)
 
     spark_context = SparkContext.getOrCreate()
     hive_context = HiveContext(spark_context)
@@ -285,6 +323,8 @@ def main():
     parser.add_argument('--database', type=str, default='default', help='Hive database')
     parser.add_argument('--json_serde', type=str, help='Path to JSONSerde jar')
     parser.add_argument('--job_id', type=str, help='Job ID to put in Hive table metadata')
+    parser.add_argument('--allow_single_files', default=False, action='store_true',
+                        help='Allow single files in the base directory')
     args = parser.parse_args()
 
     if args.s3_dir[0:2] != 's3' or '://' not in args.s3_dir:
@@ -330,7 +370,7 @@ def main():
     crawler.print_tree()
 
     # Iterate over tree and create logical root-level tables
-    tables = crawler.get_tables()
+    tables = crawler.get_tables(allow_single_files=args.allow_single_files)
 
     # Import tables into Hive metastore
     for table in tables:
