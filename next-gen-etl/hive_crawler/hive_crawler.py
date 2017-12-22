@@ -97,92 +97,17 @@ class CrawlerTable(object):
         self.logger.debug('Creating dataframe from %s format', file_type)
 
         try:
-            header_skip = 0
             if file_type == 'csv':
                 df = spark_session.read.csv(self.s3_location, header=self.use_csv_header, inferSchema=True, mode='DROPMALFORMED')
-                file_format = 'STORED AS TEXTFILE'
-                row_format = "ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde' WITH SERDEPROPERTIES('quoteChar'='\"')"
-                if self.use_csv_header:
-                    header_skip = 1
             elif file_type == 'json':
                 df = spark_session.read.json(self.s3_location, mode='DROPMALFORMED')
-                file_format = 'STORED AS TEXTFILE'
-                row_format = "ROW FORMAT SERDE 'org.apache.hive.hcatalog.data.JsonSerDe'"
             elif file_type == 'parquet':
                 df = spark_session.read.parquet(self.s3_location)
-                file_format = 'STORED AS PARQUET'
-                row_format = ''
         except AnalysisException as e:
             self.logger.error('Caught dataframe error: %s', str(e))
             return False
-
-        # TODO: partitioning
-
-        col_list = []
-        for col in df.schema:
-            json_col = col.jsonValue()
-            col_list.append('{} {}'.format(json_col['name'], json_col['type'].upper()))
-
-        drop_query = "DROP TABLE IF EXISTS {database}.{name}".format(
-            database=database,
-            name=self.name)
-
-        self.logger.debug(drop_query)
-        hive_context.sql(drop_query)
-
-        table_properties = """ALTER TABLE {database}.{name} SET TBLPROPERTIES(
-                                            'crawler.file.location'='{s3_location}',
-                                            'crawler.file.modified_time'='{modified_time}',
-                                            'crawler.file.num_rows'={num_rows},
-                                            'crawler.file.num_files'={num_files},
-                                            'crawler.file.partitioned'='{partitioned}',
-                                            'crawler.file.file_type'='{file_type}',
-                                            'crawler.job.id'='{job_id}',
-                                            'skip.header.line.count'='{header_skip}')"""
-
-        if self.is_base_file:
-            self.logger.warn('Creating table from single file in base directory')
-            create_template = """CREATE TABLE IF NOT EXISTS {database}.{name}
-                                    ({col_list})
-                                    """
-        else:
-            create_template = """CREATE EXTERNAL TABLE IF NOT EXISTS {database}.{name}
-                                ({col_list}) 
-                                {row_format} 
-                                {file_format} 
-                                LOCATION '{s3_location}'
-                            """
-
-        create_query = create_template.format(
-            database=database,
-            name=self.name,
-            col_list=','.join(col_list),
-            row_format=row_format,
-            file_format=file_format,
-            s3_location=self.s3_directory)
-
-        tbl_properties_update = table_properties.format(
-            database=database,
-            name=self.name,
-            s3_location=self.s3_directory,
-            modified_time=self.modified_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            num_rows=df.count(),
-            num_files=max(1, len(self.files)),
-            partitioned=str(self.partitioned).lower(),
-            file_type=file_type,
-            job_id=job_id,
-            header_skip=header_skip)
-
-        self.logger.debug(create_query)
-        hive_context.sql(create_query)
-
-        if self.is_base_file:
-            df.write.mode('overwrite').saveAsTable('{}.{}'.format(database, self.name))
-
-        self.logger.debug(tbl_properties_update)
-        hive_context.sql(tbl_properties_update)
-
-        return True
+        
+        return df
 
     def create_hive_table(self, s3_client, database='default', spark_session=None, hive_context=None, job_id=''):
         """ Create a Hive table using generated schema """
@@ -209,16 +134,75 @@ class CrawlerTable(object):
             contents = contents.decode(enc['encoding'], errors='ignore')
 
             if self.is_content_json(contents):
-                self.build_dataframe('json', database, spark_session, hive_context, job_id)
+                file_type = 'json'
+                df = self.build_dataframe('json', database, spark_session, hive_context, job_id)
             elif self.is_content_parquet(contents):
-                self.build_dataframe('parquet', database, spark_session, hive_context, job_id)
+                file_type = 'parquet'
+                df = self.build_dataframe('parquet', database, spark_session, hive_context, job_id)
             elif self.is_content_csv(contents):
-                self.build_dataframe('csv', database, spark_session, hive_context, job_id)
+                file_type = 'csv'
+                df = self.build_dataframe('csv', database, spark_session, hive_context, job_id)
             else:
                 raise Exception('Unable to safely identify content type')
         except UnicodeDecodeError as e:
             self.logger.error('Failed to decode file: %s', str(e))
 
+        # TODO: partitioning
+
+        if df == False:
+            return False
+
+        col_list = []
+        for col in df.schema:
+            json_col = col.jsonValue()
+            col_list.append('{} {}'.format(json_col['name'], json_col['type'].upper()))
+
+        drop_query = "DROP TABLE IF EXISTS {database}.{name}".format(
+            database=database,
+            name=self.name)
+
+        self.logger.debug(drop_query)
+        hive_context.sql(drop_query)
+
+        table_properties = """ALTER TABLE {database}.{name} SET TBLPROPERTIES(
+                                            'crawler.file.location'='{s3_location}',
+                                            'crawler.file.modified_time'='{modified_time}',
+                                            'crawler.file.num_rows'={num_rows},
+                                            'crawler.file.num_files'={num_files},
+                                            'crawler.file.partitioned'='{partitioned}',
+                                            'crawler.file.file_type'='{file_type}',
+                                            'crawler.job.id'='{job_id}')"""
+
+        create_template = """CREATE TABLE IF NOT EXISTS {database}.{name}
+                                ({col_list})
+                                """
+
+        create_query = create_template.format(
+            database=database,
+            name=self.name,
+            col_list=','.join(col_list),
+            s3_location=self.s3_directory)
+
+        tbl_properties_update = table_properties.format(
+            database=database,
+            name=self.name,
+            s3_location=self.s3_directory,
+            modified_time=self.modified_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            num_rows=df.count(),
+            num_files=max(1, len(self.files)),
+            partitioned=str(self.partitioned).lower(),
+            file_type=file_type,
+            job_id=job_id)
+
+        self.logger.debug(create_query)
+        hive_context.sql(create_query)
+
+        df.write.mode('overwrite').saveAsTable('{}.{}'.format(database, self.name))
+
+        self.logger.debug(tbl_properties_update)
+        hive_context.sql(tbl_properties_update)
+
+        return True
 
     def repr(self):
         """ object represetation """
