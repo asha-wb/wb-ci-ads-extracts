@@ -20,6 +20,7 @@ from anytree import Node, RenderTree, PreOrderIter
 from pyspark.context import SparkContext
 from pyspark.sql import SparkSession, HiveContext
 from pyspark.sql.utils import AnalysisException
+from pyspark.sql.functions import input_file_name
 
 # python 2 compatibility
 try:
@@ -58,6 +59,9 @@ class CrawlerTable(object):
         try:
             json.loads(contents.split("\n", 1)[0])
             return True
+        except ValueError: # json in Python 2 raises a ValueError instead of JSONDecodeError
+            self.logger.debug('Failed json type check')
+            return False
         except json.decoder.JSONDecodeError:
             self.logger.debug('Failed json type check')
             return False
@@ -68,7 +72,10 @@ class CrawlerTable(object):
             str_io = StringIO(contents)
             for row in parquet.reader(str_io):
                 return True
-        except OSError:
+        # IOError is a hack to support Python 2.
+        # It guarantees Parquet files will not be recognized when running on Python 2.
+        # Relevant bug: https://mail.python.org/pipermail/python-list/2011-September/611891.html
+        except (OSError, IOError):
             self.logger.debug('Failed parquet type check')
             return False
 
@@ -88,6 +95,8 @@ class CrawlerTable(object):
         except OSError:
             self.logger.debug('Failed csv type check')
             return False
+        except UnicodeEncodeError as e:
+            self.logger.debug('Caught Unicode error (%s), cannot continue', str(e))
         except csv.Error as e:
             self.logger.warn('Caught CSV error: %s', str(e))
             return True
@@ -133,6 +142,7 @@ class CrawlerTable(object):
             self.logger.debug('Guessed file encoding %s', enc['encoding'])
             contents = contents.decode(enc['encoding'], errors='ignore')
 
+            df = False
             if self.is_content_json(contents):
                 file_type = 'json'
                 df = self.build_dataframe('json', database, spark_session, hive_context, job_id)
@@ -143,7 +153,8 @@ class CrawlerTable(object):
                 file_type = 'csv'
                 df = self.build_dataframe('csv', database, spark_session, hive_context, job_id)
             else:
-                raise Exception('Unable to safely identify content type')
+                self.logger.info('Unable to safely identify content type')
+
         except UnicodeDecodeError as e:
             self.logger.error('Failed to decode file: %s', str(e))
 
@@ -151,6 +162,8 @@ class CrawlerTable(object):
 
         if df == False:
             return False
+
+        df = df.withColumn('metadata_file_name', input_file_name())
 
         col_list = []
         for col in df.schema:

@@ -80,23 +80,21 @@ class HiveTable(object):
 
         get_attr = udf(get_attr_from_file_map, StringType())
 
-        temp_df = self.df.withColumn('metadata_file_name', input_file_name())
-
         # metadata columns
         temp_df = (
-            temp_df.withColumn('metadata_file_owner', get_attr(temp_df['metadata_file_name'], lit('owner')))
-                    .withColumn('metadata_file_modified', get_attr(temp_df['metadata_file_name'], lit('modified_time')).cast('timestamp'))
+            self.df.withColumn('metadata_file_owner', get_attr(self.df['metadata_file_name'], lit('owner')))
+                    .withColumn('metadata_file_modified', get_attr(self.df['metadata_file_name'], lit('modified_time')).cast('timestamp'))
                     .withColumn('metadata_data_classification', lit(self.get_property('crawler.file.file_type')))
                     .withColumn('metadata_record_count', lit(self.get_property('crawler.file.num_rows')))
             )
-
+        temp_df.show(1)
         self.df = temp_df
         self.post_count = self.df.count()
 
     def output_to_data_lake(self, data_lake_location):
         """ Output dataframe to partitioned Parquet data lake """
         dates = self.df.select(self.df['metadata_file_modified'].cast('date').alias('lake_date')).distinct().collect()
-
+        print(dates)
         for date in dates:
             self.logger.debug('Writing %s partition to data lake', str(date['lake_date']))
             out_file = data_lake_location + '/' + self.name + '/' + str(date['lake_date']).replace('-', '/')
