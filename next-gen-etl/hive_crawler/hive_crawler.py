@@ -62,9 +62,6 @@ class CrawlerTable(object):
         except ValueError: # json in Python 2 raises a ValueError instead of JSONDecodeError
             self.logger.debug('Failed json type check')
             return False
-        except json.decoder.JSONDecodeError:
-            self.logger.debug('Failed json type check')
-            return False
 
     def is_content_parquet(self, contents):
         """ Check if content is parquet """
