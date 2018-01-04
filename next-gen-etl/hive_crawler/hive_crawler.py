@@ -129,6 +129,7 @@ class CrawlerTable(object):
         self.logger.debug('Reading from s3://%s/%s', self.bucket, key)
         obj = s3_client.get_object(Bucket=self.bucket, Key=key)
         try:
+            df = False
             contents = obj['Body'].read()
             detector = UniversalDetector()
 
@@ -139,10 +140,13 @@ class CrawlerTable(object):
 
             detector.close()
             enc = detector.result
+
+            if not enc['encoding']:
+                enc['encoding'] = 'utf-8'
+
             self.logger.debug('Guessed file encoding %s', enc['encoding'])
             contents = contents.decode(enc['encoding'], errors='ignore')
 
-            df = False
             if self.is_content_json(contents):
                 file_type = 'json'
                 df = self.build_dataframe('json', database, spark_session, hive_context, job_id)
@@ -360,6 +364,8 @@ def main():
         aws_secret_access_key=aws_secret_access_key,
         region_name='us-west-2')
     s3 = session.client(service_name='s3')
+    spark_context._jsc.hadoopConfiguration().set('fs.s3n.awsAccessKeyId', aws_access_key_id)
+    spark_context._jsc.hadoopConfiguration().set('fs.s3n.awsSecretAccessKey', aws_secret_access_key)
 
     # Create a file-system tree
     crawler = Crawler(bucket, key, s3_client=s3)
