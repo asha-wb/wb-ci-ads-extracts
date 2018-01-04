@@ -209,10 +209,12 @@ def main():
         region_name='us-west-2')
     s3 = session.client(service_name='s3')
 
-    #spark_context._jsc.hadoopConfiguration().set('fs.s3n.awsAccessKeyId', aws_access_key_id)
-    #spark_context._jsc.hadoopConfiguration().set('fs.s3n.awsSecretAccessKey', aws_secret_access_key)
-    args.data_lake = args.data_lake.replace('s3://', 's3n://').replace('s3a://', 's3n://')
-    args.redshift_temp_dir = args.redshift_temp_dir.replace('s3://', 's3n://').replace('s3a://', 's3n://')
+    spark_context._jsc.hadoopConfiguration().set('fs.s3a.impl', 'org.apache.hadoop.fs.s3a.S3AFileSystem')
+    spark_context._jsc.hadoopConfiguration().set('fs.s3a.access.key', aws_access_key_id)
+    spark_context._jsc.hadoopConfiguration().set('fs.s3a.secret.key', aws_secret_access_key)
+    spark_context._jsc.hadoopConfiguration().set('fs.s3a.server-side-encryption-algorithm', 'AES256')
+    args.data_lake = args.data_lake.replace('s3://', 's3a://').replace('s3n://', 's3a://')
+    args.redshift_temp_dir = args.redshift_temp_dir.replace('s3://', 's3a://').replace('s3n://', 's3a://')
 
     # Generate a job ID if one isn't provided
     if not args.job_id:
