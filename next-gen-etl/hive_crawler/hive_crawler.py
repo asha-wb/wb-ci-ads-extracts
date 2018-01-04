@@ -30,7 +30,7 @@ except ImportError:
 
 class CrawlerTable(object):
     """ A table created by the crawler """
-    def __init__(self, key, bucket='', name=None, partitioned=False, modified_time=None, files=[], is_base_file=False):
+    def __init__(self, key, bucket='', name=None, partitioned=False, modified_time=None, files=[], is_base_file=False, crawler_base=''):
         self.key = key
         self.bucket = bucket
         self.s3_location = 's3n://{}/{}'.format(bucket, key)
@@ -39,6 +39,7 @@ class CrawlerTable(object):
         self.partitioned = partitioned
         self.files = files
         self.is_base_file = is_base_file
+        self.crawler_base = crawler_base
 
         if not name:
             name = self.s3_location.rsplit('/', 1)[1].replace('.', '_').replace(' ', '-')
@@ -185,7 +186,8 @@ class CrawlerTable(object):
                                             'crawler.file.num_files'={num_files},
                                             'crawler.file.partitioned'='{partitioned}',
                                             'crawler.file.file_type'='{file_type}',
-                                            'crawler.job.id'='{job_id}')"""
+                                            'crawler.job.id'='{job_id}',
+                                            'crawler.job.directory'='{base_dir}')"""
 
         create_template = """CREATE TABLE IF NOT EXISTS {database}.{name}
                                 ({col_list})
@@ -206,7 +208,8 @@ class CrawlerTable(object):
             num_files=max(1, len(self.files)),
             partitioned=str(self.partitioned).lower(),
             file_type=file_type,
-            job_id=job_id)
+            job_id=job_id,
+            base_dir=self.crawler_base)
 
         self.logger.debug(create_query)
         hive_context.sql(create_query)
@@ -227,6 +230,7 @@ class Crawler(object):
     def __init__(self, bucket, path, s3_client=None):
         self.bucket = bucket
         self.path = path
+        self.s3_path = 's3n://{}/{}'.format(self.bucket, self.path)
         self.s3 = s3_client
         self.root = Node('{}/{}'.format(self.bucket, self.path))
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -273,7 +277,8 @@ class Crawler(object):
                             bucket=self.bucket,
                             partitioned=node.partitioned,
                             modified_time=node.file_obj['LastModified'],
-                            is_base_file=node.base_file
+                            is_base_file=node.base_file,
+                            crawler_base=self.s3_path
                         )
                     else:
                         files = ['s3n://' + '/'.join([p.name for p in node.path])]
@@ -288,7 +293,8 @@ class Crawler(object):
                             bucket=self.bucket,
                             partitioned=node.partitioned,
                             modified_time=max_modified_time,
-                            files=files)
+                            files=files,
+                            crawler_base=self.s3_path)
 
                     tables.append(table)
                     node.path[1].scraped = True

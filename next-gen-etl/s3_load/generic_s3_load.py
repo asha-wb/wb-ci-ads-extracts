@@ -72,6 +72,8 @@ class HiveTable(object):
 
                 file_map['s3n://{}/{}'.format(bucket, file['Key'])] = tmp
 
+        self.file_map = file_map
+
         # udf to get metadata from file map
         def get_attr_from_file_map(key, attr):
             if key in file_map and attr in file_map[key]:
@@ -130,6 +132,47 @@ class HiveTable(object):
 
         self.logger.debug(drop_table)
         hive_context.sql(drop_table)
+    
+    def archive_files(self, archive_dir, s3_client=None):
+        """ Move table files to archive bucket """
+        files = self.file_map.keys()
+        date_dir = datetime.datetime.utcnow().strftime('%Y/%m/%d/%H')
+        base_dir = self.get_property('crawler.job.directory').replace('s3://', 's3n://')
+
+        no_urn = archive_dir.replace('s3://', '').replace('s3n://', '').replace('s3a://', '')
+        dest_bucket = no_urn.split('/', 1)[0]
+        dest_key = no_urn.split('/', 1)[1]
+
+        for file in files:
+            no_urn = file.replace('s3://', '').replace('s3n://', '').replace('s3a://', '')
+            src_bucket = no_urn.split('/', 1)[0]
+            src_key = no_urn.split('/', 1)[1]
+
+            path = ''
+            if base_dir != '':
+                path = file.replace(base_dir, '')
+                if path[0] == '/':
+                    path = path[1:]
+
+            s3_client.copy_object(
+                Bucket=dest_bucket,
+                Key=dest_key + '/' + date_dir + '/' + path,
+                CopySource={
+                    'Bucket': src_bucket,
+                    'Key': src_key
+                },
+                ServerSideEncryption='AES256'
+            )
+
+            s3_client.delete_object(
+                Bucket=src_bucket,
+                Key=src_key
+            )
+
+            self.logger.info('Moved s3://%s/%s to s3://%s/%s/%s/%s',
+                             src_bucket, src_key,
+                             dest_bucket, dest_key,
+                             date_dir, path)
 
     def __repr__(self):
         """ Object representation """
@@ -178,6 +221,9 @@ def main():
     parser.add_argument('--redshift_prefix', type=str, default='', help='Prefix for Redshift tables')
     parser.add_argument('--redshift_temp_dir', type=str, help='Temp dir to use when loading Redshift tables', required=True)
     parser.add_argument('--json_serde', type=str, help='Path to JSONSerde jar')
+    parser.add_argument('--clean_up', default=False, action='store_true',
+                        help='Move data files to archive dir after crawling')
+    parser.add_argument('--archive_dir', type=str, help='Directory to archive files to')
     args = parser.parse_args()
 
     keystore = None
@@ -187,6 +233,13 @@ def main():
 
     if not keystore:
         raise AttributeError('spark.hadoop.hadoop.security.credential.provider.path is required')
+    
+    if args.clean_up:
+        if not args.archive_dir:
+            raise AttributeError('archive_dir is required for clean up')
+
+        if args.archive_dir[0:2] != 's3' or '://' not in args.archive_dir:
+            raise AttributeError('archive_dir must be in the format s3://<bucket>/<key>/')
 
     # Hack to get json serde working. Shouldn't be necessary on hortonworks cluster
     if args.json_serde:
@@ -259,6 +312,9 @@ def main():
                 logger.error('Sink count does not match source count: %s vs %s',
                              str(table.pre_count),
                              str(table.post_count))
+            elif args.clean_up:
+                table.drop_table(hive_context)
+                table.archive_files(args.archive_dir, s3_client=s3)
 
     logger.info('Finished job %s', args.job_id)
 
