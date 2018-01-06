@@ -13,7 +13,7 @@ Usage: spark-submit \
             s3://my-bucket/directory/to/scrape
 """
 
-import boto3, datetime, logging, argparse, re, hashlib, random, jks
+import boto3, datetime, logging, argparse, re, hashlib, random, jks, time, random
 import parquet, json, csv
 from chardet.universaldetector import UniversalDetector
 from anytree import Node, RenderTree, PreOrderIter
@@ -21,6 +21,7 @@ from pyspark.context import SparkContext
 from pyspark.sql import SparkSession, HiveContext
 from pyspark.sql.utils import AnalysisException
 from pyspark.sql.functions import input_file_name
+from utils import get_redshift_database_connection, update_etlprocess_dtls, get_etlprocess_dtls
 
 # python 2 compatibility
 try:
@@ -116,7 +117,7 @@ class CrawlerTable(object):
         
         return df
 
-    def create_hive_table(self, s3_client, database='default', spark_session=None, hive_context=None, job_id=''):
+    def create_hive_table(self, s3_client, database='default', spark_session=None, hive_context=None, job_id='', process_name=''):
         """ Create a Hive table using generated schema """
         file = self.s3_location
         if self.files:
@@ -186,6 +187,7 @@ class CrawlerTable(object):
                                             'crawler.file.num_files'={num_files},
                                             'crawler.file.partitioned'='{partitioned}',
                                             'crawler.file.file_type'='{file_type}',
+                                            'crawler.job.process_name'='{process_name}',
                                             'crawler.job.id'='{job_id}',
                                             'crawler.job.directory'='{base_dir}')"""
 
@@ -209,6 +211,7 @@ class CrawlerTable(object):
             partitioned=str(self.partitioned).lower(),
             file_type=file_type,
             job_id=job_id,
+            process_name=process_name,
             base_dir=self.crawler_base)
 
         self.logger.debug(create_query)
@@ -326,7 +329,7 @@ def main():
     parser.add_argument('s3_dir', type=str, help='S3 directory to crawl')
     parser.add_argument('--database', type=str, default='default', help='Hive database')
     parser.add_argument('--json_serde', type=str, help='Path to JSONSerde jar')
-    parser.add_argument('--job_id', type=str, help='Job ID to put in Hive table metadata')
+    parser.add_argument('--process_name', type=str, help='Process name for logging', required=True)
     parser.add_argument('--allow_single_files', default=False, action='store_true',
                         help='Allow single files in the base directory')
     args = parser.parse_args()
@@ -346,14 +349,6 @@ def main():
     if args.json_serde:
         hive_context.sql('ADD JAR {}'.format(args.json_serde))
 
-    # Generate a job ID if one isn't provided
-    if not args.job_id:
-        args.job_id = 'jr_{}'.format(
-            hashlib.sha256((datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.')+
-                            str(random.randint(1, 1000))).encode()).hexdigest()
-        )
-
-    logger.info('Starting job %s', args.job_id)
     hive_context.sql('CREATE DATABASE IF NOT EXISTS {}'.format(args.database))
 
     no_urn = args.s3_dir.replace('s3://', '').replace('s3n://', '').replace('s3a://', '')
@@ -362,6 +357,11 @@ def main():
 
     aws_access_key_id = keystore.secret_keys['fs.s3a.access.key'].key.decode()
     aws_secret_access_key = keystore.secret_keys['fs.s3a.secret.key'].key.decode()
+    redshift_host = keystore.secret_keys['aws.redshift.host'].key.decode()
+    redshift_user = keystore.secret_keys['aws.redshift.user'].key.decode()
+    redshift_pass = keystore.secret_keys['aws.redshift.password'].key.decode()
+    redshift_database = keystore.secret_keys['aws.redshift.database'].key.decode()
+
     session = boto3.session.Session(
         aws_access_key_id=aws_access_key_id,
         aws_secret_access_key=aws_secret_access_key,
@@ -370,39 +370,66 @@ def main():
     spark_context._jsc.hadoopConfiguration().set('fs.s3n.awsAccessKeyId', aws_access_key_id)
     spark_context._jsc.hadoopConfiguration().set('fs.s3n.awsSecretAccessKey', aws_secret_access_key)
 
-    # Create a file-system tree
-    crawler = Crawler(bucket, key, s3_client=s3)
-    crawler.crawl()
-    crawler.print_tree()
+    # Create job id
+    redshift_conn = get_redshift_database_connection(redshift_host, redshift_user, redshift_pass, redshift_database)
+    update_etlprocess_dtls(redshift_conn, args.process_name, 'start', 0)
+    process_details = get_etlprocess_dtls(redshift_conn, args.process_name)
+    job_id = process_details['cidw_etl_load_id']
 
-    # Iterate over tree and create logical root-level tables
-    tables = crawler.get_tables(allow_single_files=args.allow_single_files)
+    retries = 0
+    retries_allowed = 3
+    done = False
 
-    # Import tables into Hive metastore
-    for table in tables:
-        table.create_hive_table(
-            s3,
-            database=args.database,
-            spark_session=spark_session,
-            hive_context=hive_context,
-            job_id=args.job_id
-        )
+    while not done and retries < retries_allowed:
+        try:
+            # Create a file-system tree
+            crawler = Crawler(bucket, key, s3_client=s3)
+            crawler.crawl()
+            crawler.print_tree()
 
-    # Show created tables
-    hive_context.sql('USE {}'.format(args.database))
-    tables_df = hive_context.sql('show tables')
-    tables_df.show()
+            # Iterate over tree and create logical root-level tables
+            tables = crawler.get_tables(allow_single_files=args.allow_single_files)
 
-    # Show table properties
-    for table in tables_df.collect():
-        tblproperties = "show tblproperties {database}.{name}".format(
-            database=args.database,
-            name=table.tableName)
+            # Import tables into Hive metastore
+            for table in tables:
+                table.create_hive_table(
+                    s3,
+                    database=args.database,
+                    spark_session=spark_session,
+                    hive_context=hive_context,
+                    job_id=job_id,
+                    process_name=args.process_name
+                )
 
-        details = hive_context.sql(tblproperties)
-        details.show()
+            # Show created tables
+            hive_context.sql('USE {}'.format(args.database))
+            tables_df = hive_context.sql('show tables')
+            tables_df.show()
 
-    logger.info('Finished job %s', args.job_id)
+            # Show table properties
+            for table in tables_df.collect():
+                tblproperties = "show tblproperties {database}.{name}".format(
+                    database=args.database,
+                    name=table.tableName)
+
+                details = hive_context.sql(tblproperties)
+                details.show()
+            
+            done = True
+
+        except Exception as e:
+            retries += 1
+            logger.error('Caught exception: %s', str(e))
+
+            if retries >= retries_allowed:
+                update_etlprocess_dtls(redshift_conn, args.process_name, 'fail', 0)
+                raise
+            else:
+                time.sleep(random.randint(5, 20))
+
+    # Update etldata tables
+    update_etlprocess_dtls(redshift_conn, args.process_name, 'finish', 0)
+    update_etlprocess_dtls(redshift_conn, args.process_name, 'process_dtls', 0)
 
 if __name__ == '__main__':
     main()
