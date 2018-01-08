@@ -117,7 +117,7 @@ class CrawlerTable(object):
         
         return df
 
-    def create_hive_table(self, s3_client, database='default', spark_session=None, hive_context=None, job_id='', process_name=''):
+    def create_hive_table(self, s3_client, database='default', spark_session=None, hive_context=None, job_id='', process_name='', external=False):
         """ Create a Hive table using generated schema """
         file = self.s3_location
         if self.files:
@@ -148,12 +148,15 @@ class CrawlerTable(object):
 
             if self.is_content_json(contents):
                 file_type = 'json'
+                external_format = "ROW FORMAT SERDE 'org.apache.hive.hcatalog.data.JsonSerDe'"
                 df = self.build_dataframe('json', database, spark_session, hive_context, job_id)
             elif self.is_content_parquet(contents):
                 file_type = 'parquet'
+                external_format = 'STORED AS PARQUET'
                 df = self.build_dataframe('parquet', database, spark_session, hive_context, job_id)
             elif self.is_content_csv(contents):
                 file_type = 'csv'
+                external_format = "ROW FORMAT DELIMITED FIELDS TERMINATED BY ','"
                 df = self.build_dataframe('csv', database, spark_session, hive_context, job_id)
             else:
                 self.logger.info('Unable to safely identify content type')
@@ -180,26 +183,40 @@ class CrawlerTable(object):
         self.logger.debug(drop_query)
         hive_context.sql(drop_query)
 
-        table_properties = """ALTER TABLE {database}.{name} SET TBLPROPERTIES(
-                                            'crawler.file.location'='{s3_location}',
-                                            'crawler.file.modified_time'='{modified_time}',
-                                            'crawler.file.num_rows'={num_rows},
-                                            'crawler.file.num_files'={num_files},
-                                            'crawler.file.partitioned'='{partitioned}',
-                                            'crawler.file.file_type'='{file_type}',
-                                            'crawler.job.process_name'='{process_name}',
-                                            'crawler.job.id'='{job_id}',
-                                            'crawler.job.directory'='{base_dir}')"""
+        tbl_properties_list = [
+            "'crawler.file.location'='{s3_location}'",
+            "'crawler.file.modified_time'='{modified_time}'",
+            "'crawler.file.num_rows'={num_rows}",
+            "'crawler.file.num_files'={num_files}",
+            "'crawler.file.partitioned'='{partitioned}'",
+            "'crawler.file.file_type'='{file_type}'",
+            "'crawler.job.process_name'='{process_name}'",
+            "'crawler.job.id'='{job_id}'",
+            "'crawler.job.directory'='{base_dir}'"
+        ]
 
-        create_template = """CREATE TABLE IF NOT EXISTS {database}.{name}
-                                ({col_list})
-                                """
+        if external and file_type == 'csv' and self.use_csv_header:
+            tbl_properties_list.append("'skip.header.line.count'='1'")
+
+        table_properties = "ALTER TABLE {database}.{name} SET TBLPROPERTIES(" + ',\n'.join(tbl_properties_list) + ")"
+
+        if external:
+            create_template = """CREATE TABLE IF NOT EXISTS {database}.{name}
+                                    ({col_list})
+                                    {external_format}
+                                    LOCATION '{s3_location}'
+                                    """
+        else:
+            create_template = """CREATE TABLE IF NOT EXISTS {database}.{name}
+                                    ({col_list})
+                                    """
 
         create_query = create_template.format(
             database=database,
             name=self.name,
             col_list=','.join(col_list),
-            s3_location=self.s3_directory)
+            s3_location=self.s3_directory,
+            external_format=external_format)
 
         tbl_properties_update = table_properties.format(
             database=database,
@@ -217,7 +234,8 @@ class CrawlerTable(object):
         self.logger.debug(create_query)
         hive_context.sql(create_query)
 
-        df.write.mode('overwrite').saveAsTable('{}.{}'.format(database, self.name))
+        if not external:
+            df.write.mode('overwrite').saveAsTable('{}.{}'.format(database, self.name))
 
         self.logger.debug(tbl_properties_update)
         hive_context.sql(tbl_properties_update)
@@ -332,6 +350,8 @@ def main():
     parser.add_argument('--process_name', type=str, help='Process name for logging', required=True)
     parser.add_argument('--allow_single_files', default=False, action='store_true',
                         help='Allow single files in the base directory')
+    parser.add_argument('--external_tables', default=False, action='store_true',
+                        help='Store generated tables as external tables in Hive')
     args = parser.parse_args()
 
     if args.s3_dir[0:2] != 's3' or '://' not in args.s3_dir:
@@ -398,7 +418,8 @@ def main():
                     spark_session=spark_session,
                     hive_context=hive_context,
                     job_id=job_id,
-                    process_name=args.process_name
+                    process_name=args.process_name,
+                    external=args.external_tables
                 )
 
             # Show created tables
