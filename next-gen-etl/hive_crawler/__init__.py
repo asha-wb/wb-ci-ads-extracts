@@ -1,0 +1,1 @@
+from .hive_crawler import main

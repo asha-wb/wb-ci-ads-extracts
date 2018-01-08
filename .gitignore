@@ -8,6 +8,7 @@ secrets.json
 .pydevproject
 .settings/
 dist/
+build/
 venv/
 .coverage
 cover/
@@ -45,3 +46,5 @@ tests/testdata/ca/*.req
 **/metastore_db
 **/spark-warehouse
 **/derby.log
+**.egg-info
+
