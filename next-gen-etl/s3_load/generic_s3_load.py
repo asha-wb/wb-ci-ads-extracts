@@ -15,11 +15,12 @@ Usage: spark-submit \
             [ --job_id job_id ]
 """
 
-import boto3, py4j, datetime, logging, argparse, jks, py4j, hashlib, random
+import boto3, py4j, datetime, logging, argparse, jks, py4j, hashlib, random, time, os
 from pyspark.context import SparkContext
 from pyspark.sql import SQLContext, HiveContext, SparkSession
 from pyspark.sql.functions import lit, input_file_name, udf
 from pyspark.sql.types import StringType
+from utils import get_redshift_database_connection, update_etlprocess_dtls, get_etlprocess_dtls, update_file_dtls
 
 class HiveTable(object):
     """ Table from Hive metastore """
@@ -69,8 +70,11 @@ class HiveTable(object):
                 tmp['owner'] = file['Owner']['DisplayName']
                 tmp['filename'] = file['Key']
                 tmp['modified_time'] = file['LastModified'].replace(tzinfo=None).strftime('%Y-%m-%d %H:%M:%S')
+                tmp['size'] = file['Size']
 
                 file_map['s3n://{}/{}'.format(bucket, file['Key'])] = tmp
+
+        self.file_map = file_map
 
         # udf to get metadata from file map
         def get_attr_from_file_map(key, attr):
@@ -130,6 +134,67 @@ class HiveTable(object):
 
         self.logger.debug(drop_table)
         hive_context.sql(drop_table)
+    
+    def archive_files(self, archive_dir, s3_client=None, redshift_conn=None, process_details={}):
+        """ Move table files to archive bucket """
+        files = self.file_map.keys()
+        date_dir = datetime.datetime.utcnow().strftime('%Y/%m/%d/%H')
+        base_dir = self.get_property('crawler.job.directory').replace('s3://', 's3n://')
+
+        no_urn = archive_dir.replace('s3://', '').replace('s3n://', '').replace('s3a://', '')
+        dest_bucket = no_urn.split('/', 1)[0]
+        dest_key = no_urn.split('/', 1)[1]
+
+        for file in files:
+            start_time = datetime.datetime.now()
+            no_urn = file.replace('s3://', '').replace('s3n://', '').replace('s3a://', '')
+            src_bucket = no_urn.split('/', 1)[0]
+            src_key = no_urn.split('/', 1)[1]
+
+            path = ''
+            if base_dir != '':
+                path = file.replace(base_dir, '')
+                if path[0] == '/':
+                    path = path[1:]
+
+            s3_client.copy_object(
+                Bucket=dest_bucket,
+                Key=dest_key + '/' + date_dir + '/' + path,
+                CopySource={
+                    'Bucket': src_bucket,
+                    'Key': src_key
+                },
+                ServerSideEncryption='AES256'
+            )
+
+            s3_client.delete_object(
+                Bucket=src_bucket,
+                Key=src_key
+            )
+
+            end_time = datetime.datetime.now()
+
+            update_file_dtls(
+                conn=redshift_conn,
+                cidw_etlload_id=process_details['cidw_etl_load_id'],
+                cidw_etlprocess_id=process_details['cidw_process_id'],
+                processname=process_details['process_name'],
+                context='extract',
+                source=src_bucket + '/' + src_key,
+                destination=dest_bucket + '/' + dest_key,
+                filename=os.path.basename(src_key),
+                size_bytes=self.file_map[file].get('size', 0),
+                rows_processed=self.get_property('crawler.file.num_rows'),
+                transfer_status='S',
+                transfer_dtm=end_time.strftime('%Y-%m-%d %H:%M:%S'),
+                duration_seconds=(end_time-start_time).seconds,
+                cidw_batch_id=process_details['cidw_batch_id']
+            )
+
+            self.logger.info('Moved s3://%s/%s to s3://%s/%s/%s/%s',
+                             src_bucket, src_key,
+                             dest_bucket, dest_key,
+                             date_dir, path)
 
     def __repr__(self):
         """ Object representation """
@@ -172,12 +237,15 @@ def main():
     # args
     parser = argparse.ArgumentParser('Generic S3 to ODS load')
     parser.add_argument('--database', type=str, default='default', help='Hive database to read tables from')
-    parser.add_argument('--job_id', type=str, help='Job ID to put in Hive table metadata')
+    parser.add_argument('--process_name', type=str, help='Process name for logging', required=True)
     parser.add_argument('--data_lake', type=str, help='Data lake location', required=True)
     parser.add_argument('--redshift_schema', type=str, default='sandbox', help='Schema to put Redshift tables in')
     parser.add_argument('--redshift_prefix', type=str, default='', help='Prefix for Redshift tables')
     parser.add_argument('--redshift_temp_dir', type=str, help='Temp dir to use when loading Redshift tables', required=True)
     parser.add_argument('--json_serde', type=str, help='Path to JSONSerde jar')
+    parser.add_argument('--clean_up', default=False, action='store_true',
+                        help='Move data files to archive dir after crawling')
+    parser.add_argument('--archive_dir', type=str, help='Directory to archive files to')
     args = parser.parse_args()
 
     keystore = None
@@ -187,6 +255,13 @@ def main():
 
     if not keystore:
         raise AttributeError('spark.hadoop.hadoop.security.credential.provider.path is required')
+    
+    if args.clean_up:
+        if not args.archive_dir:
+            raise AttributeError('archive_dir is required for clean up')
+
+        if args.archive_dir[0:2] != 's3' or '://' not in args.archive_dir:
+            raise AttributeError('archive_dir must be in the format s3://<bucket>/<key>/')
 
     # Hack to get json serde working. Shouldn't be necessary on hortonworks cluster
     if args.json_serde:
@@ -208,7 +283,7 @@ def main():
         aws_secret_access_key=aws_secret_access_key,
         region_name='us-west-2')
     s3 = session.client(service_name='s3')
-
+ 
     spark_context._jsc.hadoopConfiguration().set('fs.s3a.impl', 'org.apache.hadoop.fs.s3a.S3AFileSystem')
     spark_context._jsc.hadoopConfiguration().set('fs.s3a.access.key', aws_access_key_id)
     spark_context._jsc.hadoopConfiguration().set('fs.s3a.secret.key', aws_secret_access_key)
@@ -216,51 +291,76 @@ def main():
     args.data_lake = args.data_lake.replace('s3://', 's3a://').replace('s3n://', 's3a://')
     args.redshift_temp_dir = args.redshift_temp_dir.replace('s3://', 's3a://').replace('s3n://', 's3a://')
 
-    # Generate a job ID if one isn't provided
-    if not args.job_id:
-        args.job_id = 'jr_{}'.format(
-            hashlib.sha256((datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S.')+
-                            str(random.randint(1, 1000))).encode()).hexdigest()
-        )
+    # Create job id
+    redshift_conn = get_redshift_database_connection(redshift_host, redshift_user, redshift_pass, redshift_database)
+    update_etlprocess_dtls(redshift_conn, args.process_name, 'start', 0)
+    process_details = get_etlprocess_dtls(redshift_conn, args.process_name)
+    process_details['process_name'] = args.process_name
+    job_id = process_details['cidw_etl_load_id']
+
+    last_extract_date = process_details['cidw_lastcompletiondttm']
+    if last_extract_date is None:
+        last_extract_date = datetime.datetime.now() - datetime.timedelta(days=1)
     
-    logger.info('Starting job %s', args.job_id)
+    logger.info('Last extract date: %s', last_extract_date)
 
-    # temporary hard-coded last-extract date
-    # TODO: read last_extract_date from job meta table
-    last_extract_date = datetime.datetime(2017, 11, 30)
+    retries = 0
+    retries_allowed = 3
+    done = False
 
-    # read data catalog
-    tables = read_tables_from_hive(hive_context, args.database)
+    while not done and retries < retries_allowed:
+        try:
+            # read data catalog
+            tables = read_tables_from_hive(hive_context, args.database)
 
-    for table in tables:
-        print(table.properties)
-        table_updated_at = datetime.datetime.strptime(
-            table.get_property('crawler.file.modified_time'),
-            '%Y-%m-%dT%H:%M:%SZ')
+            for table in tables:
+                print(table.properties)
+                table_updated_at = datetime.datetime.strptime(
+                    table.get_property('crawler.file.modified_time'),
+                    '%Y-%m-%dT%H:%M:%SZ')
 
-        if table_updated_at >= last_extract_date:
-            table.build_dataframe(hive_context)
-            table.add_meta_columns(s3)
+                if table_updated_at >= last_extract_date:
+                    table.build_dataframe(hive_context)
+                    table.add_meta_columns(s3)
 
-            table.output_to_data_lake(args.data_lake)
-            try:
-                table.output_to_redshift(
-                    redshift_host,
-                    redshift_user,
-                    redshift_pass,
-                    redshift_database,
-                    args.redshift_schema,
-                    table_prefix=args.redshift_prefix,
-                    temp_dir=args.redshift_temp_dir)
-            except py4j.protocol.Py4JJavaError as e:
-                logger.error('Caught Redshift error %s', str(e))
+                    table.output_to_data_lake(args.data_lake)
+                    try:
+                        table.output_to_redshift(
+                            redshift_host,
+                            redshift_user,
+                            redshift_pass,
+                            redshift_database,
+                            args.redshift_schema,
+                            table_prefix=args.redshift_prefix,
+                            temp_dir=args.redshift_temp_dir)
+                    except py4j.protocol.Py4JJavaError as e:
+                        logger.error('Caught Redshift error %s', str(e))
 
-            if table.pre_count != table.post_count:
-                logger.error('Sink count does not match source count: %s vs %s',
-                             str(table.pre_count),
-                             str(table.post_count))
+                    if table.pre_count != table.post_count:
+                        logger.error('Sink count does not match source count: %s vs %s',
+                                     str(table.pre_count),
+                                     str(table.post_count))
+                    elif args.clean_up:
+                        table.drop_table(hive_context)
+                        table.archive_files(
+                            args.archive_dir,
+                            s3_client=s3,
+                            redshift_conn=redshift_conn,
+                            process_details=process_details
+                        )
+            done = True
+        except Exception as e:
+            retries += 1
+            logger.error('Caught exception: %s', str(e))
 
-    logger.info('Finished job %s', args.job_id)
+            if retries >= retries_allowed:
+                update_etlprocess_dtls(redshift_conn, args.process_name, 'fail', 0)
+                raise
+            else:
+                time.sleep(random.randint(5, 20))
+
+    update_etlprocess_dtls(redshift_conn, args.process_name, 'finish', 0)
+    update_etlprocess_dtls(redshift_conn, args.process_name, 'process_dtls', 0)
 
 if __name__ == '__main__':
     main()
