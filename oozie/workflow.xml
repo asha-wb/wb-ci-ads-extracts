@@ -1,0 +1,88 @@
+<workflow-app name="workflow" xmlns="uri:oozie:workflow:0.5">
+
+    <global>
+        <job-tracker>${jobTracker}</job-tracker>
+        <name-node>${nameNode}</name-node>
+        <configuration>
+            <!-- Configuration so YARN doesn't kill the AM/launcher. -->
+            <property>
+                <name>oozie.launcher.mapreduce.map.memory.mb</name>
+                <value>9216</value>
+            </property>
+            <property>
+                <name>oozie.launcher.mapreduce.map.java.opts</name>
+                <value>-Xmx6144m</value>
+            </property>
+            <property>
+                <name>oozie.launcher.yarn.app.mapreduce.am.resource.mb</name>
+                <value>768</value>
+            </property>
+            <property>
+                <name>mapred.task.timeout</name>
+                <value>7200000</value>
+            </property>
+            <property>
+                <name>mapreduce.reduce.shuffle.connect.timeout</name>
+                <value>7200000</value>
+            </property>
+            <property>
+                <name>mapreduce.reduce.shuffle.read.timeout</name>
+                <value>7200000</value>
+            </property>
+            <property>
+                <name>mapred.job.queue.name</name>
+                <value>${queueName}</value>
+            </property>
+            <property>
+                <name>tez.queue.name</name>
+                <value>${queueName}</value>
+            </property>
+        </configuration>
+    </global>
+
+    <start to="crawler-job"/>
+    <action name="crawler-job">
+        <shell xmlns="uri:oozie:shell-action:0.3">
+            <exec>submit_crawler.sh</exec>
+            <argument>${s3UserDirectory}</argument>
+            <argument>${hiveDatabase}</argument>
+            <argument>${processNameCrawler}</argument>
+            <argument>${credentialFile}</argument>
+            <argument>${sparkWarehouse}</argument>
+            <file>${workflowRoot}/bin/submit_crawler.sh</file>
+            <file>${workflowRoot}/bin/run_crawler.py</file>
+            <file>${workflowRoot}/dist/wb_next_gen_etl-1.0-py2.7.egg</file>
+            <capture-output/>
+        </shell>
+        <ok to="load-job"/>
+        <error to="fail"/>
+    </action>
+
+    <action name="load-job">
+        <shell xmlns="uri:oozie:shell-action:0.3">
+            <exec>submit_load.sh</exec>
+            <argument>${hiveDatabase</argument>
+            <argument>${processNameLoad}</argument>
+            <argument>${s3DataLake}</argument>
+            <argument>${s3RedshiftDir}</argument>
+            <argument>${s3ArchiveDir}</argument>
+            <argument>${credentialFile}</argument>
+            <argument>${sparkWarehouse}</argument>
+            <argument>${jdbcRedshiftDriver}</argument>
+            <argument>${redshiftSchema}</argument>
+            <file>${workflowRoot}/bin/submit_load.sh</file>
+            <file>${workflowRoot}/bin/run_load.py</file>
+            <file>${workflowRoot}/dist/wb_next_gen_etl-1.0-py2.7.egg</file>
+            <capture-output/>
+        </shell>
+        <ok to="end"/>
+        <error to="fail"/>
+    </action>
+
+    <kill name="fail">
+        <message>Bash action failed, error message[${wf:errorMessage(wf:lastErrorNode())}]</message>
+    </kill>
+
+    <end name ="end"/>
+
+</workflow-app>
