@@ -1,5 +1,0 @@
-pyjks
-anytree
-parquet
-boto3
-chardet

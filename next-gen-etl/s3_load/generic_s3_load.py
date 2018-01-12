@@ -15,12 +15,21 @@ Usage: spark-submit \
             [ --job_id job_id ]
 """
 
-import boto3, py4j, datetime, logging, argparse, jks, py4j, hashlib, random, time, os
+import boto3, py4j, datetime, logging, argparse, jks, py4j, hashlib, random, time, os, json
 from pyspark.context import SparkContext
-from pyspark.sql import SQLContext, HiveContext, SparkSession
-from pyspark.sql.functions import lit, input_file_name, udf
+from pyspark.sql import SQLContext, HiveContext, SparkSession, Column
+from pyspark.sql.functions import lit, input_file_name, udf, col
 from pyspark.sql.types import StringType
 from utils import get_redshift_database_connection, update_etlprocess_dtls, get_etlprocess_dtls, update_file_dtls
+
+# column metadata
+# https://medium.com/@andyreagan/should-i-set-metadata-manually-in-pyspark-39993cd55359
+def withMeta(self, alias, meta):
+    sc = SparkContext._active_spark_context
+    jmeta = sc._gateway.jvm.org.apache.spark.sql.types.Metadata
+    return Column(getattr(self._jc, "as")(alias, jmeta.fromJson(json.dumps(meta))))
+
+Column.withMeta = withMeta
 
 class HiveTable(object):
     """ Table from Hive metastore """
@@ -91,22 +100,53 @@ class HiveTable(object):
                     .withColumn('metadata_data_classification', lit(self.get_property('crawler.file.file_type')))
                     .withColumn('metadata_record_count', lit(self.get_property('crawler.file.num_rows')))
             )
-        temp_df.show(1)
+
         self.df = temp_df
         self.post_count = self.df.count()
 
     def output_to_data_lake(self, data_lake_location):
         """ Output dataframe to partitioned Parquet data lake """
         dates = self.df.select(self.df['metadata_file_modified'].cast('date').alias('lake_date')).distinct().collect()
-        print(dates)
+
         for date in dates:
             self.logger.debug('Writing %s partition to data lake', str(date['lake_date']))
             out_file = data_lake_location + '/' + self.name + '/' + str(date['lake_date']).replace('-', '/')
             date_df = self.df.filter(self.df['metadata_file_modified'].cast('date') == date['lake_date'])
             date_df.write.mode('overwrite').parquet(out_file)
 
-    def output_to_redshift(self, host, user, password, database, schema, table_prefix='', temp_dir=''):
+    def output_to_redshift(self, host, user, password, database, schema, table_prefix='', temp_dir='', spark_context=None):
         """ Output dataframe to a local table on Redshift """
+        self.logger.info('Creating %s.%s%s', schema, table_prefix, self.name)
+
+        # Calculate column lengths
+        if spark_context:
+            sql_c = SQLContext(spark_context)
+            sql_c.registerDataFrameAsTable(self.df, self.name)
+            query = "SELECT max(length({col})) as maxlength FROM {name}"
+
+            adjust_cols = []
+            for column in self.df.schema.fields:
+
+                if type(column.dataType) == StringType:
+                    adjust_cols.append(column)
+
+            for column in adjust_cols:
+                exec_query = query.format(
+                    col=column.name,
+                    name=self.name
+                
+                )
+                self.logger.debug(exec_query)
+
+                maxlength = int(sql_c.sql(exec_query).collect()[0][0])
+                
+                # TODO: this *should be* unnecessary, but the load fails unless columns are significantly 
+                # wider than needed. Redshift bug?
+                maxlength += int(maxlength * 0.3)
+
+                self.logger.info('Setting %s maxlength=%s', column.name, maxlength)
+                self.df = self.df.withColumn(column.name, self.df[column.name].withMeta("", {"maxlength": maxlength}))
+
         (self.df.write
          .format("com.databricks.spark.redshift")
          .option("url", "jdbc:redshift://{host}:5439/{database}?user={user}&password={password}&ssl=true".format(
@@ -115,14 +155,14 @@ class HiveTable(object):
              password=password,
              database=database
          ))
-         .option("dbtable", '{schema}.{table_prefix}{name})'.format(
+         .option("dbtable", '{schema}.{table_prefix}{name}'.format(
              schema=schema,
              table_prefix=table_prefix,
              name=self.name
          ))
          .option("tempdir", temp_dir)
          .option("forward_spark_s3_credentials", True)
-         .mode("error")
+         .mode("append")
          .save())
 
     def drop_table(self, hive_context):
@@ -174,22 +214,23 @@ class HiveTable(object):
 
             end_time = datetime.datetime.now()
 
-            update_file_dtls(
-                conn=redshift_conn,
-                cidw_etlload_id=process_details['cidw_etl_load_id'],
-                cidw_etlprocess_id=process_details['cidw_process_id'],
-                processname=process_details['process_name'],
-                context='extract',
-                source=src_bucket + '/' + src_key,
-                destination=dest_bucket + '/' + dest_key,
-                filename=os.path.basename(src_key),
-                size_bytes=self.file_map[file].get('size', 0),
-                rows_processed=self.get_property('crawler.file.num_rows'),
-                transfer_status='S',
-                transfer_dtm=end_time.strftime('%Y-%m-%d %H:%M:%S'),
-                duration_seconds=(end_time-start_time).seconds,
-                cidw_batch_id=process_details['cidw_batch_id']
-            )
+            if redshift_conn:
+                update_file_dtls(
+                    conn=redshift_conn,
+                    cidw_etlload_id=process_details['cidw_etl_load_id'],
+                    cidw_etlprocess_id=process_details['cidw_process_id'],
+                    processname=process_details['process_name'],
+                    context='extract',
+                    source=src_bucket + '/' + src_key,
+                    destination=dest_bucket + '/' + dest_key,
+                    filename=os.path.basename(src_key),
+                    size_bytes=self.file_map[file].get('size', 0),
+                    rows_processed=self.get_property('crawler.file.num_rows'),
+                    transfer_status='S',
+                    transfer_dtm=end_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    duration_seconds=(end_time-start_time).seconds,
+                    cidw_batch_id=process_details['cidw_batch_id']
+                )
 
             self.logger.info('Moved s3://%s/%s to s3://%s/%s/%s/%s',
                              src_bucket, src_key,
@@ -207,6 +248,7 @@ def read_tables_from_hive(hive_context, database):
     tables_df = hive_context.sql('show tables')
 
     for table in tables_df.collect():
+        print(table)
         tmp_table = HiveTable(table.tableName, table.database)
 
         tblproperties = "show tblproperties {database}.{name}".format(
@@ -332,7 +374,8 @@ def main():
                             redshift_database,
                             args.redshift_schema,
                             table_prefix=args.redshift_prefix,
-                            temp_dir=args.redshift_temp_dir)
+                            temp_dir=args.redshift_temp_dir,
+                            spark_context=spark_context)
                     except py4j.protocol.Py4JJavaError as e:
                         logger.error('Caught Redshift error %s', str(e))
 
