@@ -100,14 +100,14 @@ class HiveTable(object):
                     .withColumn('metadata_data_classification', lit(self.get_property('crawler.file.file_type')))
                     .withColumn('metadata_record_count', lit(self.get_property('crawler.file.num_rows')))
             )
-        temp_df.show(1)
+
         self.df = temp_df
         self.post_count = self.df.count()
 
     def output_to_data_lake(self, data_lake_location):
         """ Output dataframe to partitioned Parquet data lake """
         dates = self.df.select(self.df['metadata_file_modified'].cast('date').alias('lake_date')).distinct().collect()
-        print(dates)
+
         for date in dates:
             self.logger.debug('Writing %s partition to data lake', str(date['lake_date']))
             out_file = data_lake_location + '/' + self.name + '/' + str(date['lake_date']).replace('-', '/')
@@ -126,11 +126,10 @@ class HiveTable(object):
 
             adjust_cols = []
             for column in self.df.schema.fields:
-                print(column)
 
                 if type(column.dataType) == StringType:
                     adjust_cols.append(column)
-            print(adjust_cols)
+
             for column in adjust_cols:
                 exec_query = query.format(
                     col=column.name,
@@ -215,22 +214,23 @@ class HiveTable(object):
 
             end_time = datetime.datetime.now()
 
-            update_file_dtls(
-                conn=redshift_conn,
-                cidw_etlload_id=process_details['cidw_etl_load_id'],
-                cidw_etlprocess_id=process_details['cidw_process_id'],
-                processname=process_details['process_name'],
-                context='extract',
-                source=src_bucket + '/' + src_key,
-                destination=dest_bucket + '/' + dest_key,
-                filename=os.path.basename(src_key),
-                size_bytes=self.file_map[file].get('size', 0),
-                rows_processed=self.get_property('crawler.file.num_rows'),
-                transfer_status='S',
-                transfer_dtm=end_time.strftime('%Y-%m-%d %H:%M:%S'),
-                duration_seconds=(end_time-start_time).seconds,
-                cidw_batch_id=process_details['cidw_batch_id']
-            )
+            if redshift_conn:
+                update_file_dtls(
+                    conn=redshift_conn,
+                    cidw_etlload_id=process_details['cidw_etl_load_id'],
+                    cidw_etlprocess_id=process_details['cidw_process_id'],
+                    processname=process_details['process_name'],
+                    context='extract',
+                    source=src_bucket + '/' + src_key,
+                    destination=dest_bucket + '/' + dest_key,
+                    filename=os.path.basename(src_key),
+                    size_bytes=self.file_map[file].get('size', 0),
+                    rows_processed=self.get_property('crawler.file.num_rows'),
+                    transfer_status='S',
+                    transfer_dtm=end_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    duration_seconds=(end_time-start_time).seconds,
+                    cidw_batch_id=process_details['cidw_batch_id']
+                )
 
             self.logger.info('Moved s3://%s/%s to s3://%s/%s/%s/%s',
                              src_bucket, src_key,
@@ -248,6 +248,7 @@ def read_tables_from_hive(hive_context, database):
     tables_df = hive_context.sql('show tables')
 
     for table in tables_df.collect():
+        print(table)
         tmp_table = HiveTable(table.tableName, table.database)
 
         tblproperties = "show tblproperties {database}.{name}".format(

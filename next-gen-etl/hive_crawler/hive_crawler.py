@@ -67,16 +67,9 @@ class CrawlerTable(object):
 
     def is_content_parquet(self, contents):
         """ Check if content is parquet """
-        try:
-            str_io = StringIO(contents)
-            for row in parquet.reader(str_io):
-                return True
-        # IOError is a hack to support Python 2.
-        # It guarantees Parquet files will not be recognized when running on Python 2.
-        # Relevant bug: https://mail.python.org/pipermail/python-list/2011-September/611891.html
-        except (OSError, IOError):
-            self.logger.debug('Failed parquet type check')
-            return False
+        if contents[0:3] == b'PAR':
+            return True
+        return False
 
     def is_content_csv(self, contents):
         """ Check if string is CSV content. Sets use_csv_header to false if first row
@@ -100,7 +93,7 @@ class CrawlerTable(object):
             self.logger.warn('Caught CSV error: %s', str(e))
             return True
 
-    def build_dataframe(self, file_type, database, spark_session, hive_context, job_id):
+    def build_dataframe(self, file_type, spark_session):
         """ Build a dataframe and create external Hive table """
         self.logger.debug('Creating dataframe from %s format', file_type)
 
@@ -144,20 +137,20 @@ class CrawlerTable(object):
                 enc['encoding'] = 'utf-8'
 
             self.logger.debug('Guessed file encoding %s', enc['encoding'])
-            contents = contents.decode(enc['encoding'], errors='ignore')
+            contents_decoded = contents.decode(enc['encoding'], errors='ignore')
 
-            if self.is_content_json(contents):
+            if self.is_content_json(contents_decoded):
                 file_type = 'json'
                 external_format = "ROW FORMAT SERDE 'org.apache.hive.hcatalog.data.JsonSerDe'"
-                df = self.build_dataframe('json', database, spark_session, hive_context, job_id)
+                df = self.build_dataframe('json', spark_session)
             elif self.is_content_parquet(contents):
                 file_type = 'parquet'
                 external_format = 'STORED AS PARQUET'
-                df = self.build_dataframe('parquet', database, spark_session, hive_context, job_id)
-            elif self.is_content_csv(contents):
+                df = self.build_dataframe('parquet', spark_session)
+            elif self.is_content_csv(contents_decoded):
                 file_type = 'csv'
                 external_format = "ROW FORMAT DELIMITED FIELDS TERMINATED BY ','"
-                df = self.build_dataframe('csv', database, spark_session, hive_context, job_id)
+                df = self.build_dataframe('csv', spark_session)
             else:
                 self.logger.info('Unable to safely identify content type')
 

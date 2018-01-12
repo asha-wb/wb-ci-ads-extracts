@@ -11,6 +11,9 @@ setup(
         'anytree',
         'parquet',
         'boto3',
-        'chardet'
+        'chardet',
+        'psycopg2',
+        'pyspark',
+        'mock'
     ]
 )
