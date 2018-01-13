@@ -365,14 +365,22 @@ def main():
                     table.build_dataframe(hive_context)
                     table.add_meta_columns(s3)
 
-                    table.output_to_data_lake(args.data_lake)
+                    data_lake_dir = args.data_lake
+                    if table.get_property('crawler.job.user_dir'):
+                        data_lake_dir += '/' + table.get_property('crawler.job.user_dir')
+
+                    table.output_to_data_lake(data_lake_dir)
                     try:
+                        redshift_schema = args.redshift_schema
+                        if table.get_property('crawler.job.user_dir'):
+                            redshift_schema = table.get_property('crawler.job.user_dir')
+
                         table.output_to_redshift(
                             redshift_host,
                             redshift_user,
                             redshift_pass,
                             redshift_database,
-                            args.redshift_schema,
+                            redshift_schema,
                             table_prefix=args.redshift_prefix,
                             temp_dir=args.redshift_temp_dir,
                             spark_context=spark_context)

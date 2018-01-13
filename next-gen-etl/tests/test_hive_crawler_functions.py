@@ -131,3 +131,15 @@ class TestCrawlerFunctions(TestBaseClass):
         tables = crawler.get_tables()
 
         assert len(tables) == 3
+    
+    def test_user_dir(self):
+        self.try_build_test_s3_directory(user_dir='user')
+        crawler = Crawler(bucket=self.s3_bucket, path=self.test_dir+'/incoming', s3_client=self.s3, user_dirs=True)
+        crawler.crawl()
+        tables = crawler.get_tables()
+
+        for table in tables:
+            assert table.user_dir
+
+        for file in self.s3.list_objects(Bucket=self.s3_bucket, Prefix=self.test_dir+'/incoming/user/').get('Contents', []):
+            self.s3.delete_object(Bucket=self.s3_bucket, Key=file['Key'])
