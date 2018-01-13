@@ -30,7 +30,7 @@ class TestBaseClass(object):
 
         return ret
 
-    def try_build_test_s3_directory(self, spark_context=None):
+    def try_build_test_s3_directory(self, spark_context=None, user_dir=''):
         try:
             credentials = self.get_credentials()
             aws_access_key_id = credentials['fs.s3a.access.key']
@@ -51,20 +51,23 @@ class TestBaseClass(object):
             spark_context._jsc.hadoopConfiguration().set('fs.s3n.awsSecretAccessKey', aws_secret_access_key)
             spark_context._jsc.hadoopConfiguration().set('fs.s3a.server-side-encryption-algorithm', 'AES256')
 
+        if user_dir:
+            user_dir += '/'
+
         try:
-            obj = self.s3.get_object(Bucket=self.s3_bucket, Key=self.test_dir+'/incoming/test_csv/test_csv.csv')
+            obj = self.s3.get_object(Bucket=self.s3_bucket, Key=self.test_dir+'/incoming/'+user_dir+'test_csv/test_csv.csv')
             return True
         except self.s3.exceptions.NoSuchKey:
             self.s3.put_object(
                 Bucket=self.s3_bucket,
-                Key=self.test_dir+'/incoming/test_csv/test_csv.csv',
+                Key=self.test_dir+'/incoming/'+user_dir+'test_csv/test_csv.csv',
                 Body=self.get_csv_string(),
                 ServerSideEncryption='AES256'
             )
 
             self.s3.put_object(
                 Bucket=self.s3_bucket,
-                Key=self.test_dir+'/incoming/test_json/test_json.json',
+                Key=self.test_dir+'/incoming/'+user_dir+'test_json/test_json.json',
                 Body=self.get_json_string(),
                 ServerSideEncryption='AES256'
             )
@@ -73,7 +76,7 @@ class TestBaseClass(object):
             if parquet_body:
                 self.s3.put_object(
                     Bucket=self.s3_bucket,
-                    Key=self.test_dir+'/incoming/test_parquet/test_parquet.parquet',
+                    Key=self.test_dir+'/incoming/'+user_dir+'test_parquet/test_parquet.parquet',
                     Body=parquet_body,
                     ServerSideEncryption='AES256'
                 )

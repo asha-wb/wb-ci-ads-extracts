@@ -31,7 +31,7 @@ except ImportError:
 
 class CrawlerTable(object):
     """ A table created by the crawler """
-    def __init__(self, key, bucket='', name=None, partitioned=False, modified_time=None, files=[], is_base_file=False, crawler_base=''):
+    def __init__(self, key, bucket='', name=None, partitioned=False, modified_time=None, files=[], is_base_file=False, crawler_base='', user_dir=False):
         self.key = key
         self.bucket = bucket
         self.s3_location = 's3n://{}/{}'.format(bucket, key)
@@ -48,6 +48,7 @@ class CrawlerTable(object):
         self.name = name
         self.logger = logging.getLogger(self.__class__.__name__)
         self.use_csv_header = True
+        self.user_dir = user_dir
 
         self.logger.debug('Created table %s from S3 location %s', self.name, self.s3_location)
 
@@ -190,6 +191,9 @@ class CrawlerTable(object):
 
         if external and file_type == 'csv' and self.use_csv_header:
             tbl_properties_list.append("'skip.header.line.count'='1'")
+        
+        if self.user_dir:
+            tbl_properties_list.append("'crawler.job.user_dir'='{user_dir}'")
 
         table_properties = "ALTER TABLE {database}.{name} SET TBLPROPERTIES(" + ',\n'.join(tbl_properties_list) + ")"
 
@@ -222,7 +226,8 @@ class CrawlerTable(object):
             file_type=file_type,
             job_id=job_id,
             process_name=process_name,
-            base_dir=self.crawler_base)
+            base_dir=self.crawler_base,
+            user_dir=self.user_dir)
 
         self.logger.debug(create_query)
         hive_context.sql(create_query)
@@ -241,13 +246,17 @@ class CrawlerTable(object):
 
 class Crawler(object):
     """ Crawler class. Scrapes files from S3 and creates logical tables from them. """
-    def __init__(self, bucket, path, s3_client=None):
+    def __init__(self, bucket, path, s3_client=None, user_dirs=False):
         self.bucket = bucket
         self.path = path
         self.s3_path = 's3n://{}/{}'.format(self.bucket, self.path)
         self.s3 = s3_client
         self.root = Node('{}/{}'.format(self.bucket, self.path))
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.user_dirs = user_dirs
+
+        if user_dirs:
+            self.user_dir = self.path.rsplit('/', 1)[1]
 
     def crawl(self):
         """ Crawls S3 location and generates a tree from the file structure """
@@ -292,7 +301,8 @@ class Crawler(object):
                             partitioned=node.partitioned,
                             modified_time=node.file_obj['LastModified'],
                             is_base_file=node.base_file,
-                            crawler_base=self.s3_path
+                            crawler_base=self.s3_path,
+                            user_dir=self.user_dir if self.user_dirs else False
                         )
                     else:
                         files = ['s3n://' + '/'.join([p.name for p in node.path])]
@@ -308,7 +318,8 @@ class Crawler(object):
                             partitioned=node.partitioned,
                             modified_time=max_modified_time,
                             files=files,
-                            crawler_base=self.s3_path)
+                            crawler_base=self.s3_path,
+                            user_dir=self.user_dir if self.user_dirs else False)
 
                     tables.append(table)
                     node.path[1].scraped = True
@@ -345,6 +356,8 @@ def main():
                         help='Allow single files in the base directory')
     parser.add_argument('--external_tables', default=False, action='store_true',
                         help='Store generated tables as external tables in Hive')
+    parser.add_argument('--user_dirs', default=False, action='store_true',
+                        help='Store user directory metadata for user schema')
     args = parser.parse_args()
 
     if args.s3_dir[0:2] != 's3' or '://' not in args.s3_dir:
@@ -395,13 +408,24 @@ def main():
 
     while not done and retries < retries_allowed:
         try:
-            # Create a file-system tree
-            crawler = Crawler(bucket, key, s3_client=s3)
-            crawler.crawl()
-            crawler.print_tree()
+            dirs = []
+            if args.user_dirs:
+                for file in s3.list_objects(Bucket=bucket, Prefix=key).get('Contents', []):
+                    root_dir = file['Key'].split('/', 1)[0]
+                    if key+'/'+root_dir not in dirs:
+                        dirs.append(key+'/'+root_dir)
+            else:
+                dirs.append(key)
 
-            # Iterate over tree and create logical root-level tables
-            tables = crawler.get_tables(allow_single_files=args.allow_single_files)
+            tables = []
+            for directory in dirs:
+                # Create a file-system tree
+                crawler = Crawler(bucket, directory, s3_client=s3, user_dirs=args.user_dirs)
+                crawler.crawl()
+                crawler.print_tree()
+
+                # Iterate over tree and create logical root-level tables
+                tables += crawler.get_tables(allow_single_files=args.allow_single_files,)
 
             # Import tables into Hive metastore
             for table in tables:
@@ -432,6 +456,7 @@ def main():
             done = True
 
         except Exception as e:
+            raise
             retries += 1
             logger.error('Caught exception: %s', str(e))
 
