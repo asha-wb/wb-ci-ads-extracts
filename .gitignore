@@ -48,3 +48,4 @@ tests/testdata/ca/*.req
 **/derby.log
 **.egg-info
 
+glue/lib
