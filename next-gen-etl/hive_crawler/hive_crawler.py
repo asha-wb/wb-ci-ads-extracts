@@ -14,7 +14,7 @@ Usage: spark-submit \
 """
 
 import boto3, datetime, logging, argparse, re, hashlib, random, jks, time, random
-import parquet, json, csv
+import parquet, json, csv, gzip
 from chardet.universaldetector import UniversalDetector
 from anytree import Node, RenderTree, PreOrderIter
 from pyspark.context import SparkContext
@@ -31,7 +31,7 @@ except ImportError:
 
 class CrawlerTable(object):
     """ A table created by the crawler """
-    def __init__(self, key, bucket='', name=None, partitioned=False, modified_time=None, files=[], is_base_file=False, crawler_base='', user_dir=False):
+    def __init__(self, key, bucket='', name=None, partitioned=False, modified_time=None, files=[], is_base_file=False, crawler_base='', user_dir=False, is_gzipped=False):
         self.key = key
         self.bucket = bucket
         self.s3_location = 's3n://{}/{}'.format(bucket, key)
@@ -49,6 +49,7 @@ class CrawlerTable(object):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.use_csv_header = True
         self.user_dir = user_dir
+        self.is_gzipped = is_gzipped
 
         self.logger.debug('Created table %s from S3 location %s', self.name, self.s3_location)
 
@@ -97,18 +98,23 @@ class CrawlerTable(object):
     def build_dataframe(self, file_type, spark_session):
         """ Build a dataframe and create external Hive table """
         self.logger.debug('Creating dataframe from %s format', file_type)
+        
+        codec = 'none'
+        if self.is_gzipped:
+            codec = 'gzip'
 
         try:
             if file_type == 'csv':
-                df = spark_session.read.csv(self.s3_location, header=self.use_csv_header, inferSchema=True, mode='DROPMALFORMED')
+                df = spark_session.read.option('codec', codec).csv(self.s3_location, header=self.use_csv_header, inferSchema=True, mode='DROPMALFORMED')
             elif file_type == 'json':
-                df = spark_session.read.json(self.s3_location, mode='DROPMALFORMED')
+                df = spark_session.read.option('codec', codec).json(self.s3_location, mode='DROPMALFORMED')
             elif file_type == 'parquet':
-                df = spark_session.read.parquet(self.s3_location)
+                df = spark_session.read.option('codec', codec).parquet(self.s3_location)
         except AnalysisException as e:
+            raise
             self.logger.error('Caught dataframe error: %s', str(e))
             return False
-        
+
         return df
 
     def create_hive_table(self, s3_client, database='default', spark_session=None, hive_context=None, job_id='', process_name='', external=False):
@@ -120,10 +126,20 @@ class CrawlerTable(object):
         key = file.replace('s3n://', '').split('/', 1)[1]
 
         self.logger.debug('Reading from s3://%s/%s', self.bucket, key)
-        obj = s3_client.get_object(Bucket=self.bucket, Key=key)
         try:
             df = False
-            contents = obj['Body'].read()
+            try:
+                obj = s3_client.get_object(Bucket=self.bucket, Key=key)
+                gzip_file = gzip.GzipFile(fileobj=obj['Body'], mode='rb')
+                contents = gzip_file.read()
+                self.is_gzipped = True
+                self.logger.debug('File is gzipped')
+                self.logger.debug("Content length: %s", len(contents))
+            except Exception as e:
+                self.logger.debug('Failed gzip check: %s', str(e))
+                obj = s3_client.get_object(Bucket=self.bucket, Key=key)
+                contents = obj['Body'].read()
+
             detector = UniversalDetector()
 
             for line in contents.split(b"\n"):
@@ -136,6 +152,7 @@ class CrawlerTable(object):
 
             if not enc['encoding']:
                 enc['encoding'] = 'utf-8'
+                self.logger.debug('Using fallback encoding choice')
 
             self.logger.debug('Guessed file encoding %s', enc['encoding'])
             contents_decoded = contents.decode(enc['encoding'], errors='ignore')

@@ -14,7 +14,7 @@ class TestReadTables(TestBaseClass):
         hive_context = HiveContext(spark_context)
 
         tables = read_tables_from_hive(hive_context, 'default')
-        assert len(tables) == 3
+        assert len(tables) == self.tast_tables
 
 class TestHiveTableFunctions(TestBaseClass):
     def test_properties(self):
@@ -27,13 +27,13 @@ class TestHiveTableFunctions(TestBaseClass):
         assert table.get_property(key) == val
 
     def test_build_dataframe(self):
-        table = HiveTable('test_csv_csv', 'default')
+        table = HiveTable('test_json_json', 'default')
         spark_context = SparkContext.getOrCreate()
         hive_context = HiveContext(spark_context)
 
         table.build_dataframe(hive_context)
         assert table.df
-        assert table.df.count() == 2
+        assert table.df.count() == len(self.dummy_content)
     
     def test_meta_columns(self):
         spark_context = SparkContext.getOrCreate()
@@ -58,7 +58,7 @@ class TestHiveTableFunctions(TestBaseClass):
         table = HiveTable('test_csv_csv', 'default')
         table.add_property('crawler.file.location', 's3n://{}/{}'.format(self.s3_bucket, self.test_dir))
         table.add_property('crawler.file.file_type', 'csv')
-        table.add_property('crawler.file.num_rows', 2)
+        table.add_property('crawler.file.num_rows', len(self.dummy_content))
 
         table.build_dataframe(hive_context)
         table.add_meta_columns(self.s3)
@@ -107,7 +107,7 @@ class TestHiveTableFunctions(TestBaseClass):
         cursor.execute(query)
         response = cursor.fetchone()
 
-        assert response[0] == 2
+        assert response[0] == len(self.dummy_content)
 
         drop = "DROP TABLE IF EXISTS sandbox.unit_testing_test_csv_csv;"
         cursor.execute(drop)

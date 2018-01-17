@@ -3,6 +3,7 @@
 import os
 import csv
 import json
+import gzip
 from io import StringIO
 import pandas
 import boto3
@@ -15,6 +16,7 @@ class TestBaseClass(object):
     ]
     s3_bucket = 'dev-cmdt-user'
     test_dir = 'btelle/unit_tests'
+    tast_tables = 4
 
     def get_credentials(self):
         try:
@@ -72,6 +74,13 @@ class TestBaseClass(object):
                 ServerSideEncryption='AES256'
             )
 
+            self.s3.put_object(
+                Bucket=self.s3_bucket,
+                Key=self.test_dir+'/incoming/'+user_dir+'test_gzip/test_gzip.gz',
+                Body=self.get_gzip_string(),
+                ServerSideEncryption='AES256'
+            )
+
             parquet_body = self.get_parquet_string()
             if parquet_body:
                 self.s3.put_object(
@@ -118,4 +127,17 @@ class TestBaseClass(object):
         except ImportError:
             contents = None
 
+        return contents
+
+    def get_gzip_string(self):
+        csv = self.get_csv_string().encode()
+
+        filename = './__test_gzip_output.gz'
+        with gzip.GzipFile(filename=filename, mode='w') as gzip_file:
+            gzip_file.write(csv)
+
+        with open(filename, 'rb') as fh:
+            contents = fh.read()
+
+        os.remove(filename)
         return contents

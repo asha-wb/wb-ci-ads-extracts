@@ -38,8 +38,8 @@ class TestCrawlerTableFunctions(TestBaseClass):
         contents = self.get_parquet_string()
         if not contents:
             print('Skipping parquet test, no fastparquet library available')
-
-        assert table.is_content_parquet(contents)
+        else:
+            assert table.is_content_parquet(contents)
 
     def test_is_not_parquet(self):
         table = CrawlerTable('test')
@@ -59,7 +59,7 @@ class TestCrawlerTableFunctions(TestBaseClass):
         )
 
         df = table.build_dataframe('csv', spark_session)
-        assert df.count() == 2
+        assert df.count() == len(self.dummy_content)
 
     def test_build_dataframe_json(self):
         spark_context = SparkContext.getOrCreate()
@@ -73,21 +73,39 @@ class TestCrawlerTableFunctions(TestBaseClass):
         )
 
         df = table.build_dataframe('json', spark_session)
-        assert df.count() == 2
+        assert df.count() == len(self.dummy_content)
+
+    def test_build_dataframe_gzip(self):
+        spark_context = SparkContext.getOrCreate()
+        spark_session = SparkSession.builder.enableHiveSupport().getOrCreate()
+        self.try_build_test_s3_directory(spark_context)
+
+        table = CrawlerTable(
+            self.test_dir + '/incoming/test_gzip/test_gzip.gz',
+            bucket=self.s3_bucket,
+            name='test_gzip',
+            is_gzipped=True
+        )
+
+        df = table.build_dataframe('csv', spark_session)
+        assert df.count() == len(self.dummy_content)
 
     def test_build_dataframe_parquet(self):
         spark_context = SparkContext.getOrCreate()
         spark_session = SparkSession.builder.enableHiveSupport().getOrCreate()
         self.try_build_test_s3_directory(spark_context)
 
-        table = CrawlerTable(
-            self.test_dir + '/incoming/test_parquet/test_parquet.parquet',
-            bucket=self.s3_bucket,
-            name='test_parquet'
-        )
+        if self.get_parquet_string():
+            table = CrawlerTable(
+                self.test_dir + '/incoming/test_parquet/test_parquet.parquet',
+                bucket=self.s3_bucket,
+                name='test_parquet'
+            )
 
-        df = table.build_dataframe('parquet', spark_session)
-        assert df.count() == 2
+            df = table.build_dataframe('parquet', spark_session)
+            assert df.count() == len(self.dummy_content)
+        else:
+            print('Skipping parquet test, no fastparquet library available')
 
     def test_create_hive_table(self):
         spark_context = SparkContext.getOrCreate()
@@ -110,7 +128,7 @@ class TestCrawlerTableFunctions(TestBaseClass):
         )
 
         query = "SELECT COUNT(*) FROM default.test_csv"
-        assert hive_context.sql(query).collect()[0][0] == 2
+        assert hive_context.sql(query).collect()[0][0] > 0
 
         drop = "DROP TABLE IF EXISTS default.test_csv"
         hive_context.sql(drop)
@@ -121,7 +139,7 @@ class TestCrawlerFunctions(TestBaseClass):
         crawler = Crawler(bucket=self.s3_bucket, path=self.test_dir+'/incoming', s3_client=self.s3)
         crawler.crawl()
 
-        assert len(crawler.root.children) == 3
+        assert len(crawler.root.children) == self.tast_tables
     
     def test_get_tables(self):
         self.try_build_test_s3_directory()
@@ -130,7 +148,7 @@ class TestCrawlerFunctions(TestBaseClass):
 
         tables = crawler.get_tables()
 
-        assert len(tables) == 3
+        assert len(tables) == self.tast_tables
     
     def test_user_dir(self):
         self.try_build_test_s3_directory(user_dir='user')
