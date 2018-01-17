@@ -14,6 +14,7 @@ setup(
         'chardet',
         'psycopg2',
         'pyspark',
-        'mock'
+        'mock',
+        'backports.csv'
     ]
 )

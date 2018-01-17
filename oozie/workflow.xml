@@ -51,7 +51,7 @@
             <argument>${sparkWarehouse}</argument>
             <file>${workflowRoot}/bin/submit_crawler.sh</file>
             <file>${workflowRoot}/bin/run_crawler.py</file>
-            <file>${workflowRoot}/dist/wb_next_gen_etl-1.0-py2.7.egg</file>
+            <file>${workflowRoot}/dist/pylib.tar.gz</file>
             <capture-output/>
         </shell>
         <ok to="load-job"/>
@@ -72,7 +72,7 @@
             <argument>${redshiftSchema}</argument>
             <file>${workflowRoot}/bin/submit_load.sh</file>
             <file>${workflowRoot}/bin/run_load.py</file>
-            <file>${workflowRoot}/dist/wb_next_gen_etl-1.0-py2.7.egg</file>
+            <file>${workflowRoot}/dist/pylib.tar.gz</file>
             <capture-output/>
         </shell>
         <ok to="end"/>
