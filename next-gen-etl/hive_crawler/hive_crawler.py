@@ -25,8 +25,9 @@ from utils import get_redshift_database_connection, update_etlprocess_dtls, get_
 
 # python 2 compatibility
 try:
-    from io import StringIO
+    from io import StringIO, BytesIO
 except ImportError:
+    print('Falling back to StringIO')
     import StringIO
 
 class CrawlerTable(object):
@@ -130,7 +131,9 @@ class CrawlerTable(object):
             df = False
             try:
                 obj = s3_client.get_object(Bucket=self.bucket, Key=key)
-                gzip_file = gzip.GzipFile(fileobj=obj['Body'], mode='rb')
+                contents = obj['Body'].read()
+                str_io = BytesIO(contents)
+                gzip_file = gzip.GzipFile(fileobj=str_io, mode='rb')
                 contents = gzip_file.read()
                 self.is_gzipped = True
                 self.logger.debug('File is gzipped')
