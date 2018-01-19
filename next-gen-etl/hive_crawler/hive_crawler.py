@@ -277,6 +277,7 @@ class Crawler(object):
 
         if user_dirs:
             self.user_dir = self.path.rsplit('/', 1)[1]
+            print(self.user_dir)
 
     def crawl(self):
         """ Crawls S3 location and generates a tree from the file structure """
@@ -400,6 +401,8 @@ def main():
     no_urn = args.s3_dir.replace('s3://', '').replace('s3n://', '').replace('s3a://', '')
     bucket = no_urn.split('/', 1)[0]
     key = no_urn.split('/', 1)[1]
+    if key[-1] == '/':
+        key = key[0:-1]
 
     aws_access_key_id = keystore.secret_keys['fs.s3a.access.key'].key.decode()
     aws_secret_access_key = keystore.secret_keys['fs.s3a.secret.key'].key.decode()
@@ -431,7 +434,7 @@ def main():
             dirs = []
             if args.user_dirs:
                 for file in s3.list_objects(Bucket=bucket, Prefix=key).get('Contents', []):
-                    root_dir = file['Key'].split('/', 1)[0]
+                    root_dir = file['Key'].replace(key+'/', '').split('/', 1)[0]
                     if key+'/'+root_dir not in dirs:
                         dirs.append(key+'/'+root_dir)
             else:
