@@ -70,7 +70,7 @@ class HiveTable(object):
         # build s3 file map
         s3_url = self.get_property('crawler.file.location')
         bucket = s3_url.replace('s3n://', '').split('/')[0]
-        prefix = s3_url.replace('s3n://', '').split('/', 1)[1]
+        prefix = s3_url.replace('s3n://', '').split('/', 1)[1] + '/'
 
         file_map = {}
         for file in s3_client.list_objects(Bucket=bucket, Prefix=prefix)['Contents']:
@@ -137,12 +137,18 @@ class HiveTable(object):
                 
                 )
                 self.logger.debug(exec_query)
+                result = sql_c.sql(exec_query).collect()
 
-                maxlength = int(sql_c.sql(exec_query).collect()[0][0])
-                
-                # TODO: this *should be* unnecessary, but the load fails unless columns are significantly 
-                # wider than needed. Redshift bug?
-                maxlength += int(maxlength * 0.3)
+                try:
+                    maxlength = int(result[0][0])
+                    # TODO: this *should be* unnecessary, but the load fails unless columns are significantly 
+                    # wider than needed. Redshift bug?
+                    maxlength += int(maxlength * 0.3)
+
+                    if maxlength > 65534:
+                        maxlength = 65534
+                except TypeError:
+                    maxlength = 65534
 
                 self.logger.info('Setting %s maxlength=%s', column.name, maxlength)
                 self.df = self.df.withColumn(column.name, self.df[column.name].withMeta("", {"maxlength": maxlength}))
@@ -249,6 +255,9 @@ def read_tables_from_hive(hive_context, database):
 
     for table in tables_df.collect():
         print(table)
+        if table.database != database:
+            continue
+
         tmp_table = HiveTable(table.tableName, table.database)
 
         tblproperties = "show tblproperties {database}.{name}".format(
