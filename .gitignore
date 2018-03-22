@@ -8,6 +8,7 @@ secrets.json
 .pydevproject
 .settings/
 dist/
+build/
 venv/
 .coverage
 cover/
@@ -41,3 +42,10 @@ contrib/python-ldap3/
 contrib/python-pymysql_sa/
 htmlcov/
 tests/testdata/ca/*.req
+
+**/metastore_db
+**/spark-warehouse
+**/derby.log
+**.egg-info
+
+glue/lib
